@@ -1,0 +1,471 @@
+"""Splunk MCP client wrapper.
+
+Wraps the Model Context Protocol client connection to a Splunk MCP server and
+exposes one Python method per tool Cairn uses. The thin wrapper buys us:
+
+- A single place to apply SPL guardrails (default time bounds, result caps).
+- Tool-availability detection (the optional ``saia_*`` tools depend on the
+  AI Assistant for SPL add-on being installed).
+- Uniform error wrapping in ``SplunkMCPError`` so the agent layer doesn't
+  have to handle every MCP-specific exception shape.
+- Response normalization — MCP returns content blocks; downstream callers
+  prefer plain dicts / strings.
+
+The MCP Python SDK exposes ``ClientSession`` over a generic transport. For
+the Splunk MCP server (which speaks HTTP), we use the ``streamable_http``
+client transport.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
+from typing import Any
+
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+logger = logging.getLogger(__name__)
+
+
+# ---- Tool names --------------------------------------------------------------
+
+# Core splunk_* tools — assumed to be available on every Splunk MCP deployment.
+TOOL_GET_INFO = "splunk_get_info"
+TOOL_GET_INDEXES = "splunk_get_indexes"
+TOOL_GET_INDEX_INFO = "splunk_get_index_info"
+TOOL_GET_METADATA = "splunk_get_metadata"
+TOOL_GET_KNOWLEDGE_OBJECTS = "splunk_get_knowledge_objects"
+TOOL_GET_USER_LIST = "splunk_get_user_list"
+TOOL_GET_USER_INFO = "splunk_get_user_info"
+TOOL_GET_KV_STORE_COLLECTIONS = "splunk_get_kv_store_collections"
+TOOL_RUN_QUERY = "splunk_run_query"
+TOOL_RUN_SAVED_SEARCH = "splunk_run_saved_search"
+
+# Optional saia_* tools — require AI Assistant for SPL.
+TOOL_EXPLAIN_SPL = "saia_explain_spl"
+TOOL_ASK_SPLUNK_QUESTION = "saia_ask_splunk_question"
+
+CORE_TOOLS: tuple[str, ...] = (
+    TOOL_GET_INFO,
+    TOOL_GET_INDEXES,
+    TOOL_GET_INDEX_INFO,
+    TOOL_GET_METADATA,
+    TOOL_GET_KNOWLEDGE_OBJECTS,
+    TOOL_GET_USER_LIST,
+    TOOL_GET_USER_INFO,
+    TOOL_GET_KV_STORE_COLLECTIONS,
+    TOOL_RUN_QUERY,
+    TOOL_RUN_SAVED_SEARCH,
+)
+
+OPTIONAL_TOOLS: tuple[str, ...] = (
+    TOOL_EXPLAIN_SPL,
+    TOOL_ASK_SPLUNK_QUESTION,
+)
+
+
+# ---- Errors / availability ---------------------------------------------------
+
+
+class SplunkMCPError(RuntimeError):
+    """Raised on any failure from the Splunk MCP server."""
+
+
+@dataclass
+class ToolAvailability:
+    """Which tools the connected server actually exposes."""
+
+    available: set[str] = field(default_factory=set)
+    missing: set[str] = field(default_factory=set)
+
+    @property
+    def has_saia(self) -> bool:
+        return TOOL_EXPLAIN_SPL in self.available or TOOL_ASK_SPLUNK_QUESTION in self.available
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "available": sorted(self.available),
+            "missing": sorted(self.missing),
+            "has_saia": self.has_saia,
+        }
+
+
+# ---- SPL guardrails ----------------------------------------------------------
+
+# Commands that produce aggregated output (no per-row need for `| head N`).
+_AGG_COMMANDS = {
+    "stats",
+    "tstats",
+    "chart",
+    "timechart",
+    "eventstats",
+    "streamstats",
+    "top",
+    "rare",
+    "transaction",
+    "metasearch",
+}
+
+_HEAD_OR_TAIL_RE = re.compile(r"\|\s*(?:head|tail)\s+\d+", re.IGNORECASE)
+_PIPE_TOKEN_RE = re.compile(r"\|\s*([a-zA-Z_]+)")
+
+
+def _has_aggregation(spl: str) -> bool:
+    return any(cmd in {c.lower() for c in _PIPE_TOKEN_RE.findall(spl)} for cmd in _AGG_COMMANDS)
+
+
+def _apply_query_guardrails(
+    spl: str,
+    *,
+    default_cap: int = 1000,
+) -> str:
+    """Ensure SPL has a sensible result cap. Aggregations are left alone."""
+    stripped = spl.strip()
+    if not stripped:
+        return stripped
+    if _HEAD_OR_TAIL_RE.search(stripped):
+        return stripped
+    if _has_aggregation(stripped):
+        return stripped
+    return f"{stripped} | head {default_cap}"
+
+
+# ---- Client ------------------------------------------------------------------
+
+
+class SplunkMCPClient:
+    """Async client for the Splunk MCP server.
+
+    Use as an async context manager::
+
+        async with SplunkMCPClient(url, token) as client:
+            info = await client.get_info()
+
+    Or manually with ``connect()`` / ``aclose()``.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        *,
+        default_earliest: str = "-24h",
+        default_latest: str = "now",
+        default_result_cap: int = 1000,
+    ) -> None:
+        self._url = url
+        self._token = token
+        self._default_earliest = default_earliest
+        self._default_latest = default_latest
+        self._default_result_cap = default_result_cap
+
+        self._session: ClientSession | None = None
+        self._exit_stack: AsyncExitStack | None = None
+        self._availability: ToolAvailability | None = None
+
+    # ---- lifecycle ----
+
+    async def __aenter__(self) -> "SplunkMCPClient":
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.aclose()
+
+    async def connect(self) -> ToolAvailability:
+        """Open the MCP session and probe tool availability."""
+        if self._session is not None:
+            assert self._availability is not None
+            return self._availability
+
+        logger.info("connecting to Splunk MCP at %s", self._url)
+        headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
+
+        self._exit_stack = AsyncExitStack()
+        try:
+            transport = await self._exit_stack.enter_async_context(
+                streamablehttp_client(self._url, headers=headers)
+            )
+            # streamablehttp_client yields (read_stream, write_stream, _close).
+            read_stream, write_stream, *_ = transport
+            session = await self._exit_stack.enter_async_context(
+                ClientSession(read_stream, write_stream)
+            )
+            await session.initialize()
+            self._session = session
+            self._availability = await self._probe_tools()
+            logger.info(
+                "connected; %d tools available (saia: %s)",
+                len(self._availability.available),
+                self._availability.has_saia,
+            )
+            return self._availability
+        except Exception as exc:
+            await self._exit_stack.aclose()
+            self._exit_stack = None
+            raise SplunkMCPError(f"failed to connect to Splunk MCP: {exc}") from exc
+
+    async def aclose(self) -> None:
+        if self._exit_stack is not None:
+            await self._exit_stack.aclose()
+        self._exit_stack = None
+        self._session = None
+        self._availability = None
+
+    @property
+    def availability(self) -> ToolAvailability:
+        if self._availability is None:
+            raise SplunkMCPError("client is not connected — call connect() first")
+        return self._availability
+
+    async def _probe_tools(self) -> ToolAvailability:
+        assert self._session is not None
+        try:
+            listing = await self._session.list_tools()
+        except Exception as exc:
+            raise SplunkMCPError(f"list_tools failed: {exc}") from exc
+
+        names: set[str] = set()
+        for tool in getattr(listing, "tools", []) or []:
+            name = getattr(tool, "name", None)
+            if isinstance(name, str):
+                names.add(name)
+
+        expected = set(CORE_TOOLS) | set(OPTIONAL_TOOLS)
+        return ToolAvailability(
+            available=names & expected,
+            missing=expected - names,
+        )
+
+    # ---- core call helper ----
+
+    async def _call(self, tool: str, arguments: dict[str, Any] | None = None) -> Any:
+        if self._session is None:
+            raise SplunkMCPError("client is not connected")
+        if self._availability and tool not in self._availability.available:
+            raise SplunkMCPError(f"tool {tool!r} is not available on this MCP server")
+
+        try:
+            result = await self._session.call_tool(tool, arguments or {})
+        except Exception as exc:
+            raise SplunkMCPError(f"{tool} failed: {exc}") from exc
+
+        if getattr(result, "isError", False):
+            raise SplunkMCPError(f"{tool} returned an error: {_render_content(result)}")
+
+        return _normalize_result(result)
+
+    # ---- splunk_* tools ----
+
+    async def get_info(self) -> dict[str, Any]:
+        """Return Splunk deployment info (version, build, server name, etc.)."""
+        return _expect_dict(await self._call(TOOL_GET_INFO))
+
+    async def get_indexes(self) -> list[dict[str, Any]]:
+        """List every index on the deployment."""
+        return _expect_list_of_dicts(await self._call(TOOL_GET_INDEXES))
+
+    async def get_index_info(self, index_name: str) -> dict[str, Any]:
+        """Per-index metadata: total event count, size, retention, etc."""
+        return _expect_dict(await self._call(TOOL_GET_INDEX_INFO, {"index": index_name}))
+
+    async def get_metadata(
+        self,
+        index_name: str,
+        *,
+        kind: str = "sourcetypes",
+    ) -> list[dict[str, Any]]:
+        """``| metadata type=<kind> index=<index>`` results.
+
+        ``kind`` is one of ``sources``, ``sourcetypes``, or ``hosts``.
+        """
+        return _expect_list_of_dicts(
+            await self._call(TOOL_GET_METADATA, {"index": index_name, "type": kind})
+        )
+
+    async def get_knowledge_objects(
+        self,
+        *,
+        kind: str | None = None,
+        app: str | None = None,
+        owner: str | None = None,
+        count: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Enumerate knowledge objects.
+
+        ``kind`` selects the object class — ``savedsearches``, ``macros``,
+        ``lookups``, ``eventtypes``, ``views`` (dashboards), etc. If omitted,
+        the server returns every kind it knows about.
+        """
+        args: dict[str, Any] = {}
+        if kind is not None:
+            args["type"] = kind
+        if app is not None:
+            args["app"] = app
+        if owner is not None:
+            args["owner"] = owner
+        if count is not None:
+            args["count"] = count
+        return _expect_list_of_dicts(await self._call(TOOL_GET_KNOWLEDGE_OBJECTS, args))
+
+    async def get_user_list(self) -> list[dict[str, Any]]:
+        """List all Splunk users."""
+        return _expect_list_of_dicts(await self._call(TOOL_GET_USER_LIST))
+
+    async def get_user_info(self, username: str) -> dict[str, Any]:
+        """Per-user info: roles, capabilities, default app, email."""
+        return _expect_dict(await self._call(TOOL_GET_USER_INFO, {"username": username}))
+
+    async def get_kv_store_collections(
+        self,
+        *,
+        app: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """KV store collections; optionally scoped to ``app``."""
+        args: dict[str, Any] = {}
+        if app is not None:
+            args["app"] = app
+        return _expect_list_of_dicts(await self._call(TOOL_GET_KV_STORE_COLLECTIONS, args))
+
+    async def run_query(
+        self,
+        spl: str,
+        *,
+        earliest: str | None = None,
+        latest: str | None = None,
+        max_results: int | None = None,
+    ) -> dict[str, Any]:
+        """Run ad-hoc SPL.
+
+        Guardrails applied automatically:
+
+        - If ``earliest`` is not given, the configured default (``-24h``) is used.
+        - If ``latest`` is not given, ``now`` is used.
+        - If the SPL has no ``head`` / ``tail`` and no aggregating command, a
+          ``| head <default_result_cap>`` is appended to bound the result set.
+        """
+        if not spl or not spl.strip():
+            raise SplunkMCPError("run_query: SPL cannot be empty")
+
+        cap = max_results or self._default_result_cap
+        bounded_spl = _apply_query_guardrails(spl, default_cap=cap)
+
+        args: dict[str, Any] = {
+            "query": bounded_spl,
+            "earliest_time": earliest or self._default_earliest,
+            "latest_time": latest or self._default_latest,
+        }
+        return _expect_dict(await self._call(TOOL_RUN_QUERY, args))
+
+    async def run_saved_search(
+        self,
+        name: str,
+        *,
+        owner: str | None = None,
+        app: str | None = None,
+        trigger_actions: bool = False,
+    ) -> dict[str, Any]:
+        """Dispatch a saved search and return its results."""
+        args: dict[str, Any] = {"name": name, "trigger_actions": trigger_actions}
+        if owner is not None:
+            args["owner"] = owner
+        if app is not None:
+            args["app"] = app
+        return _expect_dict(await self._call(TOOL_RUN_SAVED_SEARCH, args))
+
+    # ---- saia_* tools (optional) ----
+
+    def has_saia(self) -> bool:
+        return self.availability.has_saia
+
+    async def explain_spl(self, spl: str) -> str:
+        """Natural-language explanation of ``spl``.
+
+        Raises ``SplunkMCPError`` if AI Assistant for SPL isn't installed on
+        the server. Callers should check :py:meth:`has_saia` first and route
+        to a Claude fallback when False.
+        """
+        if not spl or not spl.strip():
+            raise SplunkMCPError("explain_spl: SPL cannot be empty")
+        result = await self._call(TOOL_EXPLAIN_SPL, {"spl": spl})
+        return _expect_text(result)
+
+    async def ask_splunk_question(self, question: str) -> str:
+        """Free-form Splunk-domain Q&A via the SAIA tool."""
+        if not question or not question.strip():
+            raise SplunkMCPError("ask_splunk_question: question cannot be empty")
+        result = await self._call(TOOL_ASK_SPLUNK_QUESTION, {"question": question})
+        return _expect_text(result)
+
+
+# ---- Response normalization --------------------------------------------------
+
+
+def _render_content(result: Any) -> str:
+    """Human-readable rendering of MCP content blocks (used in error messages)."""
+    blocks = getattr(result, "content", None) or []
+    pieces: list[str] = []
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if text:
+            pieces.append(text)
+    return "\n".join(pieces) if pieces else repr(result)
+
+
+def _normalize_result(result: Any) -> Any:
+    """Reduce an MCP ``CallToolResult`` to a plain Python value.
+
+    Splunk's MCP server typically returns JSON in a single text content block.
+    We try to parse JSON; if that fails we fall back to the raw text. If the
+    server uses ``structuredContent``, we prefer that.
+    """
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        return structured
+
+    blocks = getattr(result, "content", None) or []
+    if not blocks:
+        return None
+
+    text_pieces = [getattr(b, "text", "") for b in blocks if getattr(b, "text", None)]
+    text = "\n".join(text_pieces).strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _expect_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    raise SplunkMCPError(f"expected dict response, got {type(value).__name__}: {value!r}")
+
+
+def _expect_list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, dict)]
+    if isinstance(value, dict):
+        # Splunk often wraps lists under "entries" / "results" / "items".
+        for key in ("entries", "results", "items", "data"):
+            inner = value.get(key)
+            if isinstance(inner, list):
+                return [v for v in inner if isinstance(v, dict)]
+    raise SplunkMCPError(f"expected list response, got {type(value).__name__}: {value!r}")
+
+
+def _expect_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("explanation", "answer", "text", "response"):
+            v = value.get(key)
+            if isinstance(v, str):
+                return v
+        return json.dumps(value, indent=2)
+    return str(value)

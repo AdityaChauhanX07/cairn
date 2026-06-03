@@ -1,0 +1,17 @@
+service,owner,team,escalation_contact
+auth-api,alice.chen,Identity,identity-oncall@example.com
+session-svc,alice.chen,Identity,identity-oncall@example.com
+payments-api,bob.martinez,Payments,payments-oncall@example.com
+billing-svc,bob.martinez,Payments,payments-oncall@example.com
+web-frontend,carol.singh,Web,web-oncall@example.com
+search-api,david.okafor,Search,search-oncall@example.com
+recommendations-svc,david.okafor,Search,search-oncall@example.com
+catalog-svc,eve.nakamura,Catalog,catalog-oncall@example.com
+inventory-svc,eve.nakamura,Catalog,catalog-oncall@example.com
+notifications-svc,frank.weber,Platform,platform-oncall@example.com
+edge-gateway,grace.huang,Platform,platform-oncall@example.com
+firewall-fleet,heidi.park,SecOps,secops-oncall@example.com
+auth-events-pipeline,heidi.park,SecOps,secops-oncall@example.com
+deploy-orchestrator,ivan.petrov,DevEx,devex-oncall@example.com
+ci-runner,ivan.petrov,DevEx,devex-oncall@example.com
+metrics-collector,judy.lin,Observability,observability-oncall@example.com

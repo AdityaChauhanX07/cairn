@@ -1,0 +1,16 @@
+ip,threat_type,confidence,source
+198.51.100.23,brute_force,high,internal_honeypot
+198.51.100.47,scanner,high,internal_honeypot
+203.0.113.12,c2_traffic,critical,vendor_feed_a
+203.0.113.45,malware_drop,high,vendor_feed_a
+203.0.113.78,phishing_infra,medium,vendor_feed_b
+192.0.2.5,brute_force,critical,internal_honeypot
+192.0.2.99,scanner,medium,internal_honeypot
+185.220.101.34,tor_exit,low,public_list
+185.220.101.55,tor_exit,low,public_list
+45.79.13.21,credential_stuffing,high,vendor_feed_a
+45.79.13.99,credential_stuffing,critical,vendor_feed_a
+91.219.236.220,exploit_kit,critical,vendor_feed_b
+91.219.236.221,exploit_kit,high,vendor_feed_b
+146.70.116.40,brute_force,high,internal_honeypot
+146.70.116.41,scanner,high,internal_honeypot
