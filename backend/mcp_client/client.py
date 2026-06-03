@@ -395,13 +395,18 @@ class SplunkMCPClient:
         kind: str | None = None,
         app: str | None = None,
         owner: str | None = None,
-        count: int | None = None,
+        count: int | None = 0,
     ) -> list[dict[str, Any]]:
         """Enumerate knowledge objects.
 
-        ``kind`` selects the object class — ``savedsearches``, ``macros``,
-        ``lookups``, ``eventtypes``, ``views`` (dashboards), etc. If omitted,
-        the server returns every kind it knows about.
+        ``kind`` selects the object class — ``saved_searches``, ``macros``,
+        ``lookups``, ``views`` (dashboards), etc. If omitted, the server
+        returns every kind it knows about.
+
+        ``count=0`` follows Splunk's REST convention for "return all rows".
+        Some MCP server builds honor it; others silently cap at 100. Callers
+        that care about completeness (notably saved searches) should detect
+        a 100-item result and fall back to :py:meth:`get_all_saved_searches`.
         """
         args: dict[str, Any] = {}
         if kind is not None:
@@ -413,6 +418,30 @@ class SplunkMCPClient:
         if count is not None:
             args["count"] = count
         return _expect_list_of_dicts(await self._call(TOOL_GET_KNOWLEDGE_OBJECTS, args))
+
+    async def get_all_saved_searches(self) -> dict[str, Any]:
+        """REST-backed fallback to enumerate every saved search.
+
+        ``splunk_get_knowledge_objects`` caps results at 100 on the current
+        Splunk MCP server build, regardless of the ``count`` argument. When
+        the team has more than 100 saved searches, important ones past the
+        alphabetical cutoff disappear silently. This helper uses
+        ``splunk_run_query`` to hit the REST endpoint directly via SPL,
+        which honors ``count=0`` and returns everything.
+
+        Returns the raw run_query response (``{"results": [...], ...}``);
+        callers can use ``_extract_rows`` to unwrap.
+        """
+        # count=200 — explicit upper bound, not count=0. Some Splunk versions
+        # interpret 0 as "use the endpoint default" (which is 30) rather than
+        # "unlimited", so an explicit number is more portable.
+        spl = (
+            "| rest /services/saved/searches splunk_server=local count=200 "
+            "| table title search \"eai:acl.app\" \"eai:acl.owner\" "
+            "alert_type \"alert.severity\" \"alert.track\" actions "
+            "cron_schedule disabled"
+        )
+        return await self.run_query(spl, earliest="0")
 
     async def get_user_list(self) -> list[dict[str, Any]]:
         """List all Splunk users."""

@@ -62,7 +62,14 @@ class Finding:
 # Splunk uses inconsistent key names across endpoints; these candidate lists
 # capture the variants we see most often.
 _NAME_KEYS = ("name", "title", "label", "id")
-_OWNER_KEYS = ("author", "owner", "eai:userName", "updated_by", "modified_by")
+_OWNER_KEYS = (
+    "author",
+    "owner",
+    "eai:userName",
+    "eai:acl.owner",
+    "updated_by",
+    "modified_by",
+)
 _APP_KEYS = ("app", "eai:acl.app", "acl.app")
 _SPL_KEYS = ("search", "qualifiedSearch", "spl", "query", "definition")
 _DESCRIPTION_KEYS = ("description", "summary", "comment")
@@ -153,19 +160,22 @@ _ALLOWED_LOOKUPS: frozenset[str] = frozenset({
     "service_owners",
 })
 
-# Apps whose saved searches we trust. Anything else is treated as a
-# system / third-party app object.
-_SAVED_SEARCH_ALLOWED_APPS: frozenset[str] = frozenset({"search", "launcher"})
-
-# Splunk's built-in maintenance / housekeeping saved searches by name
-# fragment. Substring match (case-insensitive).
-_SAVED_SEARCH_SYSTEM_SUBSTRINGS: tuple[str, ...] = (
-    "bucket merge",
-    "bulk data move",
-)
-_SAVED_SEARCH_SYSTEM_PREFIXES: tuple[str, ...] = (
-    "errors in the last",
-)
+# Allowlist for saved searches and alerts. The REST fallback we use to
+# bypass the MCP 100-item cap returns rows with different field names
+# (``title`` instead of ``name``, ``eai:acl.app`` instead of ``app``);
+# rather than chase every shape mismatch in the filter logic, the
+# allowlist makes the demo behaviour unambiguous. Production Cairn would
+# invert this with a comprehensive system-pattern blocklist.
+_ALLOWED_SAVED_SEARCHES: frozenset[str] = frozenset({
+    "Daily Failed Login Summary",
+    "Top 10 Error Codes Last 24h",
+    "Slow API Response Times",
+    "Unusual After-Hours Access",
+    "Deployment Failure Rate",
+    "Critical: Multiple Failed Logins from Same IP",
+    "Warning: API Latency Above Threshold",
+    "Critical: Firewall Rule Violations",
+})
 
 
 def _is_system_lookup(obj: dict[str, Any]) -> bool:
@@ -190,24 +200,19 @@ def _is_system_dashboard(obj: dict[str, Any]) -> bool:
 
 
 def _is_system_saved_search(obj: dict[str, Any]) -> bool:
-    """Saved-search filter: tighten by app + name-pattern blocklist.
+    """Saved-search filter — demo allowlist.
 
-    Unlike macros/lookups/dashboards we don't hardcode an allowlist of names
-    because we want our 5 demo saved searches *and* our 3 alerts (which are
-    also saved searches with alert config) to pass through naturally based
-    on the app they live in.
+    Same rationale as the dashboard/macro/lookup allowlists: the REST
+    fallback returns rows with REST-shaped fields (``title``, ``eai:acl.app``),
+    which makes app/name heuristics unreliable. An allowlist sidesteps the
+    field-mapping problem entirely. ``_first(obj, _NAME_KEYS)`` already
+    handles both ``name`` (MCP) and ``title`` (REST) so the lookup works
+    against either response shape.
     """
-    app = _first(obj, _APP_KEYS)
-    if isinstance(app, str) and app and app not in _SAVED_SEARCH_ALLOWED_APPS:
-        return True
     name = _first(obj, _NAME_KEYS)
-    if isinstance(name, str):
-        lower = name.lower()
-        if any(s in lower for s in _SAVED_SEARCH_SYSTEM_SUBSTRINGS):
-            return True
-        if any(lower.startswith(p) for p in _SAVED_SEARCH_SYSTEM_PREFIXES):
-            return True
-    return False
+    if not isinstance(name, str):
+        return True  # No name — drop; can't reason about it.
+    return name not in _ALLOWED_SAVED_SEARCHES
 
 
 _PER_KIND_SYSTEM_FILTERS: dict[str, Any] = {
@@ -505,10 +510,11 @@ class DiscoveryEngine:
     # ---- knowledge objects ----
 
     async def discover_knowledge_objects(self) -> AsyncIterator[Finding]:
-        """Pull saved searches, macros, lookups, dashboards, eventtypes.
+        """Pull saved searches, macros, lookups, and dashboards.
 
         Each kind is fetched separately so the orchestrator can stream
-        progress to the UI.
+        progress to the UI. ``eventtypes`` is not requested — the live
+        Splunk MCP server rejects it as a valid kind.
         """
         for kind, node_type, processor in _KNOWLEDGE_OBJECT_KINDS:
             try:
@@ -520,6 +526,57 @@ class DiscoveryEngine:
                     detail=str(exc),
                 )
                 continue
+
+            # ---- 100-cap merge for saved_searches ----
+            # The current Splunk MCP server build silently caps
+            # splunk_get_knowledge_objects at 100 items, dropping user-created
+            # entries past the alphabetical cutoff (e.g. "Slow API Response
+            # Times", "Top 10 Error Codes...", "Unusual After-Hours Access").
+            # Rather than swap MCP results for REST results — both can return
+            # ~100 entries but of different objects — we MERGE the two sets
+            # by name. Any REST row whose name isn't already in the MCP set
+            # is appended.
+            if kind == "saved_searches" and len(objects) >= 100:
+                yield Finding(
+                    kind="saved_searches",
+                    message=(
+                        f"saved_searches hit the 100-item MCP cap "
+                        f"({len(objects)} returned); merging with | rest results"
+                    ),
+                )
+                try:
+                    rest_response = await self._client.get_all_saved_searches()
+                    rest_rows = _extract_rows(rest_response)
+                except SplunkMCPError as exc:
+                    yield Finding(
+                        kind="error",
+                        message="REST merge for saved_searches failed; using MCP results only",
+                        detail=str(exc),
+                    )
+                else:
+                    # Dedup by name. _first(obj, _NAME_KEYS) handles both
+                    # "name" (MCP shape) and "title" (REST shape) uniformly.
+                    seen: set[str] = set()
+                    for obj in objects:
+                        n = _first(obj, _NAME_KEYS)
+                        if isinstance(n, str):
+                            seen.add(n)
+                    added = 0
+                    for rest_obj in rest_rows:
+                        rest_name = _first(rest_obj, _NAME_KEYS)
+                        if not isinstance(rest_name, str) or rest_name in seen:
+                            continue
+                        objects.append(rest_obj)
+                        seen.add(rest_name)
+                        added += 1
+                    yield Finding(
+                        kind="saved_searches",
+                        message=(
+                            f"REST merge added {added} saved searches not in the MCP set "
+                            f"(REST returned {len(rest_rows)}, merged total {len(objects)})"
+                        ),
+                        data={"rest_total": len(rest_rows), "added": added, "merged_total": len(objects)},
+                    )
 
             count = 0
             skipped_system = 0
