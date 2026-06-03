@@ -18,13 +18,16 @@ client transport.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
+import warnings
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
@@ -32,6 +35,57 @@ from mcp.client.streamable_http import streamablehttp_client
 # Valid values for the ``transport`` kwarg of :class:`SplunkMCPClient`.
 TRANSPORT_STREAMABLE_HTTP = "streamable_http"
 TRANSPORT_SSE = "sse"
+
+# Splunk's management/MCP endpoint typically presents a self-signed certificate
+# in local dev (and even in many production deployments behind an internal CA).
+# Suppress the noisy per-request urllib3 / httpx warnings that result.
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+
+
+def _make_insecure_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    """``HttpxClientFactory`` that returns a client with TLS verification off.
+
+    The MCP SDK's transport clients accept a factory matching the signature
+    ``(headers, timeout, auth) -> httpx.AsyncClient``. Returning a client
+    constructed with ``verify=False`` is the canonical way to opt out of
+    certificate validation for self-signed Splunk deployments.
+    """
+    return httpx.AsyncClient(
+        verify=False,
+        headers=headers or {},
+        timeout=timeout if timeout is not None else httpx.Timeout(30.0),
+        auth=auth,
+        follow_redirects=True,
+    )
+
+
+def _insecure_transport_kwargs(transport_fn: Any) -> dict[str, Any]:
+    """Pick the right kwarg name for disabling TLS on this MCP SDK version.
+
+    Modern MCP SDKs expose ``httpx_client_factory`` (a callable). Older
+    versions exposed ``httpx_client`` (an instance). If neither is present
+    we return an empty dict and log a warning — the connection will then
+    fall back to the SDK's default (verifying) client.
+    """
+    try:
+        params = inspect.signature(transport_fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "httpx_client_factory" in params:
+        return {"httpx_client_factory": _make_insecure_http_client}
+    if "httpx_client" in params:
+        return {"httpx_client": _make_insecure_http_client()}
+    logging.getLogger(__name__).warning(
+        "%s accepts neither httpx_client_factory nor httpx_client; "
+        "cannot disable TLS verification — SSL errors against self-signed "
+        "Splunk certs are likely.",
+        getattr(transport_fn, "__name__", repr(transport_fn)),
+    )
+    return {}
 
 logger = logging.getLogger(__name__)
 
@@ -200,9 +254,17 @@ class SplunkMCPClient:
         self._exit_stack = AsyncExitStack()
         try:
             if self._transport == TRANSPORT_SSE:
-                transport_cm = sse_client(self._url, headers=headers)
+                transport_cm = sse_client(
+                    self._url,
+                    headers=headers,
+                    **_insecure_transport_kwargs(sse_client),
+                )
             else:
-                transport_cm = streamablehttp_client(self._url, headers=headers)
+                transport_cm = streamablehttp_client(
+                    self._url,
+                    headers=headers,
+                    **_insecure_transport_kwargs(streamablehttp_client),
+                )
             transport = await self._exit_stack.enter_async_context(transport_cm)
             # streamablehttp_client yields (read_stream, write_stream, _close);
             # sse_client yields (read_stream, write_stream). The ``*_`` handles both.
