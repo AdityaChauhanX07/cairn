@@ -7,7 +7,7 @@ threads the results into the relationship graph, and yields events that
 describe what it found.
 
 Discovery is intentionally a thin layer — the *what to do next* decisions
-live in the orchestrator (and Claude). Discovery focuses on:
+live in the orchestrator (and the LLM). Discovery focuses on:
 
 - Pacing MCP calls (kind-by-kind so the agent stays responsive).
 - Normalizing inconsistent server responses into typed graph nodes.

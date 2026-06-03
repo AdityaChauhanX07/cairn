@@ -6,7 +6,7 @@ makes to another becomes an edge. After exploration, the graph is what the
 synthesis step turns into a guide.
 
 This module is intentionally I/O-free: it can be unit-tested without any
-Splunk or Anthropic connection.
+Splunk or LLM connection.
 """
 
 from __future__ import annotations

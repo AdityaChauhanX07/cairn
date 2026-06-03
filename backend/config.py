@@ -38,14 +38,14 @@ class Settings(BaseSettings):
         description="Splunk auth token used to call the MCP server.",
     )
 
-    # ---- Anthropic ----
-    anthropic_api_key: SecretStr = Field(
+    # ---- Groq ----
+    groq_api_key: SecretStr = Field(
         default=SecretStr(""),
-        description="Anthropic API key.",
+        description="Groq API key.",
     )
-    claude_model: str = Field(
-        default="claude-sonnet-4-6",
-        description="Claude model ID used by the orchestrator.",
+    groq_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq-hosted model ID used by the orchestrator.",
     )
 
     # ---- App ----

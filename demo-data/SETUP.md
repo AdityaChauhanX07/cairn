@@ -12,7 +12,7 @@ Time estimate: **20–30 minutes** against a Splunk Enterprise instance you alre
 - Splunk Web reachable at `http://localhost:8000` (or wherever your instance lives).
 - Admin credentials.
 - The two CSV files from this directory: `known_bad_ips.csv` and `service_owners.csv`.
-- (Optional, for the SPL-explanation demo) **AI Assistant for SPL** (`saia_*` tools) installed on the deployment. Cairn detects this automatically and falls back to Claude if absent.
+- (Optional, for the SPL-explanation demo) **AI Assistant for SPL** (`saia_*` tools) installed on the deployment. Cairn detects this automatically and falls back to its own LLM (Groq) if absent.
 
 ---
 

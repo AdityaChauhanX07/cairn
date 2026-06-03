@@ -9,7 +9,7 @@ pydantic-settings>=2.5.0
 python-dotenv>=1.0.1
 
 # ---- AI / MCP ----
-anthropic>=0.40.0
+groq>=0.11.0
 mcp>=1.0.0
 
 # ---- HTTP / async ----
@@ -18,6 +18,10 @@ anyio>=4.6.0
 
 # ---- Utilities ----
 python-multipart>=0.0.12
+
+# ---- Demo-data setup script (demo-data/setup_splunk.py) ----
+# Only needed if you run the standalone Splunk seeding script.
+requests>=2.32.0
 
 # ---- Dev (optional, useful for the hackathon) ----
 # pytest>=8.3.3

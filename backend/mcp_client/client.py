@@ -26,7 +26,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mcp import ClientSession
+from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
+
+# Valid values for the ``transport`` kwarg of :class:`SplunkMCPClient`.
+TRANSPORT_STREAMABLE_HTTP = "streamable_http"
+TRANSPORT_SSE = "sse"
 
 logger = logging.getLogger(__name__)
 
@@ -156,12 +161,19 @@ class SplunkMCPClient:
         default_earliest: str = "-24h",
         default_latest: str = "now",
         default_result_cap: int = 1000,
+        transport: str = TRANSPORT_STREAMABLE_HTTP,
     ) -> None:
         self._url = url
         self._token = token
         self._default_earliest = default_earliest
         self._default_latest = default_latest
         self._default_result_cap = default_result_cap
+        if transport not in (TRANSPORT_STREAMABLE_HTTP, TRANSPORT_SSE):
+            raise ValueError(
+                f"unknown transport {transport!r}; "
+                f"expected one of {TRANSPORT_STREAMABLE_HTTP!r}, {TRANSPORT_SSE!r}"
+            )
+        self._transport = transport
 
         self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
@@ -187,10 +199,13 @@ class SplunkMCPClient:
 
         self._exit_stack = AsyncExitStack()
         try:
-            transport = await self._exit_stack.enter_async_context(
-                streamablehttp_client(self._url, headers=headers)
-            )
-            # streamablehttp_client yields (read_stream, write_stream, _close).
+            if self._transport == TRANSPORT_SSE:
+                transport_cm = sse_client(self._url, headers=headers)
+            else:
+                transport_cm = streamablehttp_client(self._url, headers=headers)
+            transport = await self._exit_stack.enter_async_context(transport_cm)
+            # streamablehttp_client yields (read_stream, write_stream, _close);
+            # sse_client yields (read_stream, write_stream). The ``*_`` handles both.
             read_stream, write_stream, *_ = transport
             session = await self._exit_stack.enter_async_context(
                 ClientSession(read_stream, write_stream)
@@ -387,7 +402,7 @@ class SplunkMCPClient:
 
         Raises ``SplunkMCPError`` if AI Assistant for SPL isn't installed on
         the server. Callers should check :py:meth:`has_saia` first and route
-        to a Claude fallback when False.
+        to an LLM fallback when False.
         """
         if not spl or not spl.strip():
             raise SplunkMCPError("explain_spl: SPL cannot be empty")

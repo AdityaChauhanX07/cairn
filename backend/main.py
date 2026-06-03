@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings)
-    logger.info("Cairn starting on %s:%d (model=%s)", settings.host, settings.port, settings.claude_model)
+    logger.info("Cairn starting on %s:%d (model=%s)", settings.host, settings.port, settings.groq_model)
     try:
         yield
     finally:

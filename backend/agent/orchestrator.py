@@ -1,12 +1,12 @@
 """Orchestrator — the agentic Orient/Reason/Investigate/Decide/Synthesize loop.
 
 This is the *brain* of Cairn. It owns the relationship graph, drives the
-discovery engine, and hands the graph to Claude at the moments where
-reasoning is needed (deciding what to investigate next, explaining SPL,
-synthesizing the final guide).
+discovery engine, and hands the graph to the LLM (Groq-hosted Llama) at
+the moments where reasoning is needed (deciding what to investigate next,
+explaining SPL, synthesizing the final guide).
 
 Key design choice: the loop is **agentic, not pipelined**. After each round
-of discovery, we ask Claude to inspect a structured summary of the graph
+of discovery, we ask the LLM to inspect a structured summary of the graph
 and tell us what looks most worth investigating next. The orchestrator
 acts on those recommendations until either the agent says "done" or we hit
 ``max_agent_iterations``.
@@ -26,8 +26,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
-from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam
+from groq import AsyncGroq
 
 from config import Settings, get_settings
 from mcp_client import SplunkMCPClient, SplunkMCPError
@@ -88,21 +87,21 @@ class OnboardingGuide:
 
 
 class Orchestrator:
-    """Cairn's agent brain. Owns the loop, the graph, and the Claude client."""
+    """Cairn's agent brain. Owns the loop, the graph, and the LLM client."""
 
     def __init__(
         self,
         mcp_client: SplunkMCPClient,
         *,
         settings: Settings | None = None,
-        anthropic: AsyncAnthropic | None = None,
+        llm: AsyncGroq | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._mcp = mcp_client
         self._graph = RelationshipGraph()
         self._discovery = DiscoveryEngine(mcp_client, self._graph, parser=SPLParser())
-        self._anthropic = anthropic or AsyncAnthropic(
-            api_key=self._settings.anthropic_api_key.get_secret_value()
+        self._llm = llm or AsyncGroq(
+            api_key=self._settings.groq_api_key.get_secret_value()
         )
         self._guide: OnboardingGuide | None = None
         self._lock = asyncio.Lock()
@@ -178,10 +177,10 @@ class Orchestrator:
                 async for finding in self._discovery.resolve_placeholders():
                     yield _finding_to_event(AgentPhase.INVESTIGATE, finding)
 
-            # ---- Reason: ask Claude what to do next ----
+            # ---- Reason: ask the LLM what to do next ----
             yield AgentEvent(
                 phase=AgentPhase.REASON,
-                message="asking Claude what looks worth investigating",
+                message="asking the LLM what looks worth investigating",
             )
             try:
                 plan = await self._reason_next_step()
@@ -196,7 +195,7 @@ class Orchestrator:
 
             yield AgentEvent(
                 phase=AgentPhase.REASON,
-                message=plan.get("rationale") or "Claude responded",
+                message=plan.get("rationale") or "LLM responded",
                 data={"plan": plan},
             )
 
@@ -204,7 +203,7 @@ class Orchestrator:
             if plan.get("done") or not actions:
                 break
 
-            # ---- Investigate: execute Claude's suggested actions ----
+            # ---- Investigate: execute the LLM's suggested actions ----
             for action in actions:
                 async for event in self._execute_action(action):
                     yield event
@@ -248,7 +247,7 @@ class Orchestrator:
     # ---- Reason step ----
 
     async def _reason_next_step(self) -> dict[str, Any]:
-        """Ask Claude to inspect the graph and propose next actions.
+        """Ask the LLM to inspect the graph and propose next actions.
 
         Returns ``{"actions": [...], "done": bool, "rationale": str}``.
         Action shapes are:
@@ -257,7 +256,7 @@ class Orchestrator:
             {"type": "investigate_index", "name": "..."}
         """
         summary = self._graph.summary()
-        # Pick a few representative artifacts so Claude has something concrete
+        # Pick a few representative artifacts so the LLM has something concrete
         # to react to without us shipping the whole graph every iteration.
         sample_alerts = [
             {"name": n.name, "spl": (n.properties.get("spl") or "")[:400]}
@@ -287,13 +286,12 @@ class Orchestrator:
             "the user would care about (alerts + their macros/lookups)."
         )
 
-        messages: list[MessageParam] = [{"role": "user", "content": prompt}]
-        response = await self._anthropic.messages.create(
-            model=self._settings.claude_model,
+        response = await self._llm.chat.completions.create(
+            model=self._settings.groq_model,
+            messages=[{"role": "user", "content": prompt}],
             max_tokens=1024,
-            messages=messages,
         )
-        text = _join_text(response)
+        text = _extract_text(response)
         return _parse_json_or_default(
             text,
             default={"done": True, "rationale": "no parseable plan; stopping", "actions": []},
@@ -354,17 +352,17 @@ class Orchestrator:
                 data={"info": info, "sourcetypes": sts},
             )
         else:
-            logger.warning("unknown action type from Claude: %r", action_type)
+            logger.warning("unknown action type from LLM: %r", action_type)
 
     # ---- SPL explanation w/ fallback ----
 
     async def _explain_spl(self, spl: str) -> str:
-        """Prefer the SAIA tool; fall back to Claude when it's unavailable."""
+        """Prefer the SAIA tool; fall back to the LLM when it's unavailable."""
         if self._mcp.has_saia():
             try:
                 return await self._mcp.explain_spl(spl)
             except SplunkMCPError as exc:
-                logger.info("saia explain_spl failed, falling back to Claude: %s", exc)
+                logger.info("saia explain_spl failed, falling back to LLM: %s", exc)
 
         prompt = (
             "Explain the following SPL query in plain English for a Splunk newcomer. "
@@ -372,17 +370,17 @@ class Orchestrator:
             "macros / lookups / indexes it depends on. Be concise — 3 short paragraphs max.\n\n"
             f"SPL:\n```\n{spl}\n```"
         )
-        response = await self._anthropic.messages.create(
-            model=self._settings.claude_model,
-            max_tokens=600,
+        response = await self._llm.chat.completions.create(
+            model=self._settings.groq_model,
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=600,
         )
-        return _join_text(response)
+        return _extract_text(response)
 
     # ---- Synthesis ----
 
     async def _synthesize_guide(self) -> OnboardingGuide:
-        """Hand the full graph to Claude and ask for the onboarding guide."""
+        """Hand the full graph to the LLM and ask for the onboarding guide."""
         graph_snapshot = self._graph.to_dict()
         alerts = self._collect_alert_chains()
         ownership_signals = self._collect_ownership_signals()
@@ -411,12 +409,12 @@ class Orchestrator:
             "Write the guide now. No preamble, just the five H2 sections."
         )
 
-        response = await self._anthropic.messages.create(
-            model=self._settings.claude_model,
-            max_tokens=4096,
+        response = await self._llm.chat.completions.create(
+            model=self._settings.groq_model,
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=4096,
         )
-        markdown = _join_text(response).strip()
+        markdown = _extract_text(response).strip()
         sections = _split_sections(markdown)
         return OnboardingGuide(
             markdown=markdown,
@@ -461,7 +459,7 @@ class Orchestrator:
     # ---- Follow-up Q&A ----
 
     async def ask(self, question: str) -> str:
-        """Answer a follow-up question using the graph + Claude."""
+        """Answer a follow-up question using the graph + LLM."""
         snapshot = self._graph.to_dict()
         prompt = (
             "You are Cairn, an AI assistant that already explored this Splunk "
@@ -471,12 +469,12 @@ class Orchestrator:
             f"QUESTION: {question}\n\n"
             f"GRAPH:\n{json.dumps(snapshot, indent=2)[:12000]}"
         )
-        response = await self._anthropic.messages.create(
-            model=self._settings.claude_model,
-            max_tokens=1024,
+        response = await self._llm.chat.completions.create(
+            model=self._settings.groq_model,
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
         )
-        return _join_text(response).strip()
+        return _extract_text(response).strip()
 
 
 # ---- helpers -------------------------------------------------------------
@@ -491,18 +489,20 @@ def _finding_to_event(phase: AgentPhase, finding: Finding) -> AgentEvent:
     )
 
 
-def _join_text(response: Any) -> str:
-    """Concatenate every text block in an Anthropic Message response."""
-    pieces: list[str] = []
-    for block in getattr(response, "content", []) or []:
-        text = getattr(block, "text", None)
-        if isinstance(text, str):
-            pieces.append(text)
-    return "\n".join(pieces)
+def _extract_text(response: Any) -> str:
+    """Pull the assistant message text from a Groq chat-completion response."""
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    if message is None:
+        return ""
+    content = getattr(message, "content", None)
+    return content if isinstance(content, str) else ""
 
 
 def _parse_json_or_default(text: str, *, default: dict[str, Any]) -> dict[str, Any]:
-    """Tolerant JSON extraction — handles Claude wrapping JSON in code fences."""
+    """Tolerant JSON extraction — handles models wrapping JSON in code fences."""
     if not text:
         return default
     stripped = text.strip()

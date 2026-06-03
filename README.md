@@ -12,7 +12,7 @@ Cairn writes it down. By tracing dependency chains and reading real audit usage 
 
 ## How It Works
 
-Cairn is **agentic, not pipelined.** Claude is in the loop at every step, deciding what to investigate next based on what it has already discovered.
+Cairn is **agentic, not pipelined.** A Groq-hosted LLM is in the loop at every step, deciding what to investigate next based on what it has already discovered.
 
 ```
 +-------------------+
@@ -20,7 +20,7 @@ Cairn is **agentic, not pipelined.** Claude is in the loop at every step, decidi
 +---------+---------+
           |
 +---------v---------+
-|   Reason          |   Claude: "what looks worth investigating?"
+|   Reason          |   LLM: "what looks worth investigating?"
 +---------+---------+
           |
 +---------v---------+
@@ -41,11 +41,11 @@ The **relationship graph** is the core data structure. Cairn parses every SPL st
 
 ## Features
 
-- **Agentic exploration loop** — Claude orchestrates discovery; no fixed pipeline.
+- **Agentic exploration loop** — the LLM orchestrates discovery; no fixed pipeline.
 - **Relationship graph** — Traces chains: `alert → saved search → SPL → macro → lookup → index`.
 - **SPL parser** — Extracts macro references (`` `macro_name` ``), lookup references (`| lookup ...`), and index references (`index=...`).
 - **Audit-driven importance** — Uses `_audit` and `_internal` to see what's *actually* run, not what merely *exists*.
-- **SPL explanations via `saia_explain_spl`** — Falls back to Claude when AI Assistant for SPL isn't installed.
+- **SPL explanations via `saia_explain_spl`** — Falls back to the Groq LLM when AI Assistant for SPL isn't installed.
 - **Streamed exploration UI** — SSE events let the frontend show the agent's reasoning live.
 - **Onboarding guide** — Markdown / HTML export, structured into the five sections a new engineer actually needs.
 - **Follow-up Q&A** — Ask questions about the environment after the initial exploration completes.
@@ -56,15 +56,15 @@ The **relationship graph** is the core data structure. Cairn parses every SPL st
 +---------------+         +----------------+         +-----------------+
 |   Frontend    |  SSE +  |  FastAPI       |   MCP   |  Splunk MCP     |
 |   (React)     | <-----> |  backend       | <-----> |  server (12     |
-|               |  REST   |  + Claude      |  JSON   |  tools)         |
+|               |  REST   |  + Groq LLM    |  JSON   |  tools)         |
 +---------------+         +----------------+         +-----------------+
                                  |
                                  v
-                          +--------------+
-                          | Anthropic API|
-                          | (claude-     |
-                          |  sonnet-4-6) |
-                          +--------------+
+                          +-----------------+
+                          |   Groq API      |
+                          | (llama-3.3-70b- |
+                          |   versatile)    |
+                          +-----------------+
 ```
 
 A full diagram lives in [`docs/architecture.png`](docs/) (placeholder — to be added).
@@ -95,13 +95,13 @@ Cairn uses **12 tools** across two namespaces exposed by the Splunk MCP server.
 | `saia_explain_spl` | Natural-language explanation of a SPL string. |
 | `saia_ask_splunk_question` | General Splunk-domain Q&A fallback. |
 
-If `saia_*` tools are unavailable on the connected deployment, Cairn detects this on connect and routes SPL explanation through Claude directly.
+If `saia_*` tools are unavailable on the connected deployment, Cairn detects this on connect and routes SPL explanation through its own LLM directly.
 
 ## Tech Stack
 
-- **Backend:** Python 3.11+, FastAPI, Anthropic SDK, MCP Python SDK
+- **Backend:** Python 3.11+, FastAPI, Groq SDK, MCP Python SDK
 - **Frontend:** React + Vite + TypeScript (scaffold lives in `frontend/`, planned)
-- **AI:** Anthropic Claude (`claude-sonnet-4-6` by default)
+- **AI:** Groq API serving Llama 3.3 70B (`llama-3.3-70b-versatile` by default)
 - **Protocol:** Model Context Protocol over HTTPS to the Splunk MCP server
 
 ## Setup
@@ -112,7 +112,7 @@ If `saia_*` tools are unavailable on the connected deployment, Cairn detects thi
 - Node.js 20 or newer (for the frontend, when added)
 - A reachable Splunk Enterprise / Cloud instance with the MCP server enabled
 - A Splunk auth token with read access to the relevant indexes and knowledge objects
-- An Anthropic API key
+- A Groq API key (free at https://console.groq.com/keys)
 
 ### 1. Clone
 
@@ -142,7 +142,7 @@ cp ../.env.example ../.env
 # then edit ../.env and fill in:
 #   SPLUNK_MCP_URL
 #   SPLUNK_TOKEN
-#   ANTHROPIC_API_KEY
+#   GROQ_API_KEY
 ```
 
 ### 4. (Optional) Load demo data
@@ -169,11 +169,11 @@ npm run dev
 
 ## How AI Is Used
 
-Cairn uses Claude at three distinct levels of abstraction:
+Cairn uses Groq-hosted Llama 3.3 70B at three distinct levels of abstraction:
 
-1. **Agentic reasoning loop** — Claude decides *what to investigate next*. After each round of discovery it gets a structured summary of what's been found so far and returns a prioritized list of follow-ups (e.g. *"three alerts reference an unknown macro — pull that macro before synthesizing"*).
-2. **SPL understanding** — For every SPL string the agent encounters, it requests a natural-language explanation via `saia_explain_spl` when available, falling back to Claude with a tight, schema-aware prompt when not.
-3. **Guide synthesis** — Once the relationship graph is complete, Claude is handed the full structured graph (alerts, their chains, ownership signals, usage data) and asked to produce a guide that reads like a senior engineer's walkthrough — not a metadata dump.
+1. **Agentic reasoning loop** — the LLM decides *what to investigate next*. After each round of discovery it gets a structured summary of what's been found so far and returns a prioritized list of follow-ups (e.g. *"three alerts reference an unknown macro — pull that macro before synthesizing"*).
+2. **SPL understanding** — For every SPL string the agent encounters, it requests a natural-language explanation via `saia_explain_spl` when available, falling back to the LLM with a tight, schema-aware prompt when not.
+3. **Guide synthesis** — Once the relationship graph is complete, the LLM is handed the full structured graph (alerts, their chains, ownership signals, usage data) and asked to produce a guide that reads like a senior engineer's walkthrough — not a metadata dump.
 
 ## License
 
