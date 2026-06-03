@@ -212,7 +212,7 @@ class SplunkMCPClient:
         url: str,
         token: str,
         *,
-        default_earliest: str = "-24h",
+        default_earliest: str = "0",
         default_latest: str = "now",
         default_result_cap: int = 1000,
         transport: str = TRANSPORT_STREAMABLE_HTTP,
@@ -339,16 +339,41 @@ class SplunkMCPClient:
     # ---- splunk_* tools ----
 
     async def get_info(self) -> dict[str, Any]:
-        """Return Splunk deployment info (version, build, server name, etc.)."""
-        return _expect_dict(await self._call(TOOL_GET_INFO))
+        """Return Splunk deployment info (version, build, server name, etc.).
+
+        The Splunk MCP server wraps the row in ``{"results": [{...}], ...}``;
+        we unwrap so callers always see a flat dict of fields.
+        """
+        raw = await self._call(TOOL_GET_INFO)
+        unwrapped = _first_result_row(raw)
+        if unwrapped is not None:
+            return unwrapped
+        return _expect_dict(raw)
 
     async def get_indexes(self) -> list[dict[str, Any]]:
-        """List every index on the deployment."""
-        return _expect_list_of_dicts(await self._call(TOOL_GET_INDEXES))
+        """List every index on the deployment.
+
+        The Splunk MCP server returns ``{"count": N, "names": [str, ...]}``;
+        we normalize to ``[{"name": <name>}, ...]`` so downstream code can
+        iterate uniformly with the other dict-shaped knowledge-object lists.
+        """
+        raw = await self._call(TOOL_GET_INDEXES)
+        if isinstance(raw, dict):
+            names = raw.get("names")
+            if isinstance(names, list):
+                return [{"name": n} for n in names if isinstance(n, str)]
+        return _expect_list_of_dicts(raw)
 
     async def get_index_info(self, index_name: str) -> dict[str, Any]:
-        """Per-index metadata: total event count, size, retention, etc."""
-        return _expect_dict(await self._call(TOOL_GET_INDEX_INFO, {"index_name": index_name}))
+        """Per-index metadata: total event count, size, retention, etc.
+
+        Same ``results[0]`` unwrap as :py:meth:`get_info`.
+        """
+        raw = await self._call(TOOL_GET_INDEX_INFO, {"index_name": index_name})
+        unwrapped = _first_result_row(raw)
+        if unwrapped is not None:
+            return unwrapped
+        return _expect_dict(raw)
 
     async def get_metadata(
         self,
@@ -516,6 +541,19 @@ def _normalize_result(result: Any) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         return text
+
+
+def _first_result_row(value: Any) -> dict[str, Any] | None:
+    """If ``value`` is ``{"results": [row, ...], ...}``, return the first row.
+
+    Returns ``None`` if the shape doesn't match — caller can fall back.
+    """
+    if not isinstance(value, dict):
+        return None
+    results = value.get("results")
+    if isinstance(results, list) and results and isinstance(results[0], dict):
+        return results[0]
+    return None
 
 
 def _expect_dict(value: Any) -> dict[str, Any]:

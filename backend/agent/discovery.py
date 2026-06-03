@@ -68,6 +68,42 @@ _SPL_KEYS = ("search", "qualifiedSearch", "spl", "query", "definition")
 _DESCRIPTION_KEYS = ("description", "summary", "comment")
 _IS_ALERT_KEYS = ("is_scheduled", "alert.track", "alert_type")
 
+# Apps Splunk ships internally — knowledge objects that live in them are
+# almost never relevant to a team's onboarding ("how do I work in this
+# Splunk?") so we filter them out before they pollute the graph. Apps not
+# in this set — most notably ``search`` and ``launcher`` plus any custom
+# user app — are kept.
+_SYSTEM_APPS: frozenset[str] = frozenset({
+    "SplunkDeploymentServerConfig",
+    "splunk_monitoring_console",
+    "splunk-dashboard-studio",
+    "splunk_internal_metrics",
+    "splunk_metrics_workspace",
+    "learned",
+    "introspection_generator_addon",
+    "splunk_instrumentation",
+    "splunk_secure_gateway",
+    "Splunk_AI_Assistant_Cloud",
+    "splunk_app_for_splunk_o11y_cloud",
+    "splunk_gdi",
+    "splunk_httpinput",
+    "Splunk_MCP_Server",
+    "python_upgrade_readiness_app",
+    "alert_logevent",
+    "alert_webhook",
+    "appsbrowser",
+    "audit_trail",
+    "splunk-visual-exporter",
+})
+
+
+def _is_system_object(obj: dict[str, Any]) -> bool:
+    """True iff ``obj`` belongs to a known Splunk system/built-in app."""
+    app = _first(obj, _APP_KEYS)
+    if not isinstance(app, str):
+        return False  # No app info — keep it; better than dropping silently.
+    return app in _SYSTEM_APPS
+
 
 def _first(d: dict[str, Any], keys: tuple[str, ...], default: Any = None) -> Any:
     for k in keys:
@@ -246,7 +282,8 @@ class DiscoveryEngine:
                 message=f"profiled index {node.name}",
                 data={
                     "index": node.name,
-                    "event_count": node.properties.get("event_count"),
+                    "totalEventCount": node.properties.get("totalEventCount"),
+                    "currentDBSizeMB": node.properties.get("currentDBSizeMB"),
                     "sourcetype_count": len(sts),
                 },
             )
@@ -271,14 +308,21 @@ class DiscoveryEngine:
                 continue
 
             count = 0
+            skipped_system = 0
             for obj in objects:
+                if _is_system_object(obj):
+                    skipped_system += 1
+                    continue
                 if processor(self, node_type, obj):
                     count += 1
 
             yield Finding(
                 kind=kind,
-                message=f"found {count} {kind}",
-                data={"count": count},
+                message=(
+                    f"found {count} {kind}"
+                    + (f" ({skipped_system} system objects filtered out)" if skipped_system else "")
+                ),
+                data={"count": count, "skipped_system": skipped_system, "total": len(objects)},
             )
 
     # ---- placeholders / chase down references ----
@@ -306,6 +350,8 @@ class DiscoveryEngine:
                 )
                 macros = []
             for obj in macros:
+                if _is_system_object(obj):
+                    continue
                 name = _first(obj, _NAME_KEYS)
                 if isinstance(name, str) and name in macro_names:
                     _process_macro(self, NodeType.MACRO, obj)
@@ -321,6 +367,8 @@ class DiscoveryEngine:
                 )
                 lookups = []
             for obj in lookups:
+                if _is_system_object(obj):
+                    continue
                 name = _first(obj, _NAME_KEYS)
                 if isinstance(name, str) and name in lookup_names:
                     _process_lookup(self, NodeType.LOOKUP, obj)
@@ -354,7 +402,9 @@ class DiscoveryEngine:
             "max(_time) as last_run by savedsearch_name"
         )
         try:
-            res = await self._client.run_query(usage_spl, earliest="-24h")
+            # earliest="0" — all time — because demo data may be older than
+            # the last 24h and we'd otherwise show "no usage" for everything.
+            res = await self._client.run_query(usage_spl, earliest="0")
         except SplunkMCPError as exc:
             yield Finding(
                 kind="error",
@@ -565,7 +615,10 @@ _KNOWLEDGE_OBJECT_KINDS: tuple[tuple[str, NodeType, Any], ...] = (
     ("macros", NodeType.MACRO, _process_macro),
     ("lookups", NodeType.LOOKUP, _process_lookup),
     ("eventtypes", NodeType.EVENTTYPE, _process_eventtype),
-    ("savedsearches", NodeType.SAVED_SEARCH, _process_saved_search),
+    # ``saved_searches`` (with underscore) is the kind name confirmed by the
+    # live MCP server — it returns 100+ items including alerts, which we
+    # then re-type via _looks_like_alert in the processor.
+    ("saved_searches", NodeType.SAVED_SEARCH, _process_saved_search),
     ("views", NodeType.DASHBOARD, _process_dashboard),
 )
 
@@ -574,20 +627,29 @@ _KNOWLEDGE_OBJECT_KINDS: tuple[tuple[str, NodeType, Any], ...] = (
 
 
 def _index_properties(entry: dict[str, Any]) -> dict[str, Any]:
+    """Map a Splunk index dict to graph node properties.
+
+    Keys are kept verbatim from Splunk's REST API (``totalEventCount``,
+    ``currentDBSizeMB``, etc.) so that downstream consumers — most notably
+    the LLM during synthesis — see the same field names a Splunk
+    administrator would recognize.
+    """
     return {
-        "event_count": _to_int(
+        "totalEventCount": _to_int(
             entry.get("totalEventCount")
             or entry.get("total_event_count")
             or entry.get("event_count")
         ),
-        "current_db_size_mb": _to_int(
+        "currentDBSizeMB": _to_int(
             entry.get("currentDBSizeMB") or entry.get("current_db_size_mb")
         ),
-        "frozen_time_period_in_secs": _to_int(
+        "frozenTimePeriodInSecs": _to_int(
             entry.get("frozenTimePeriodInSecs") or entry.get("frozen_time_period_in_secs")
         ),
-        "min_time": entry.get("minTime") or entry.get("min_time"),
-        "max_time": entry.get("maxTime") or entry.get("max_time"),
+        "minTime": entry.get("minTime") or entry.get("min_time"),
+        "maxTime": entry.get("maxTime") or entry.get("max_time"),
+        "datatype": entry.get("datatype"),
+        "disabled": entry.get("disabled"),
         "placeholder": False,
     }
 

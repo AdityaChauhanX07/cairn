@@ -59,8 +59,12 @@ class Settings(BaseSettings):
 
     # ---- Agent behavior ----
     default_earliest: str = Field(
-        default="-24h",
-        description="Default earliest= for ad-hoc SPL when none provided.",
+        default="0",
+        description=(
+            "Default earliest= for ad-hoc SPL when none provided. "
+            "'0' means 'all time' — appropriate when demo data may be older "
+            "than the last 24h. Override in .env for production."
+        ),
     )
     default_result_cap: int = Field(
         default=1000,
