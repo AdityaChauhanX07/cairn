@@ -141,6 +141,21 @@ def _strip_quotes(value: str) -> str:
     return value
 
 
+# File extensions commonly used for Splunk lookup tables. The graph uses the
+# stripped name as the canonical node ID so that SPL references (which never
+# include the extension — ``| lookup known_bad_ips``) and MCP-discovered
+# filenames (``known_bad_ips.csv``) collapse to the same node.
+_LOOKUP_FILE_EXTS: tuple[str, ...] = (".csv.gz", ".csv", ".kmz", ".mmdb")
+
+
+def _strip_lookup_extension(name: str) -> str:
+    lower = name.lower()
+    for ext in _LOOKUP_FILE_EXTS:
+        if lower.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
 def _unique(items: Iterable[str]) -> list[str]:
     """De-dupe while preserving first-seen order."""
     seen: set[str] = set()
@@ -214,6 +229,10 @@ class RelationshipGraph:
 
     @staticmethod
     def make_id(node_type: NodeType, name: str) -> str:
+        # Strip lookup file extensions so ``known_bad_ips`` (from SPL parsing)
+        # and ``known_bad_ips.csv`` (from the MCP lookups listing) share an ID.
+        if node_type == NodeType.LOOKUP:
+            name = _strip_lookup_extension(name)
         return f"{node_type.value}:{name}"
 
     def add_node(
@@ -222,7 +241,14 @@ class RelationshipGraph:
         name: str,
         properties: dict[str, Any] | None = None,
     ) -> Node:
-        """Insert or merge a node. Returns the canonical node."""
+        """Insert or merge a node. Returns the canonical node.
+
+        When merging into an existing placeholder node and the new add is
+        explicitly non-placeholder, the display name is also upgraded — this
+        matters most for lookups where the SPL ref ("known_bad_ips") creates
+        the placeholder and the MCP discovery later supplies the richer
+        filename ("known_bad_ips.csv").
+        """
         node_id = self.make_id(node_type, name)
         existing = self._nodes.get(node_id)
         if existing is None:
@@ -230,6 +256,12 @@ class RelationshipGraph:
             self._nodes[node_id] = node
             return node
         if properties:
+            if (
+                properties.get("placeholder") is False
+                and existing.properties.get("placeholder")
+                and existing.name != name
+            ):
+                existing.name = name
             existing.properties.update(properties)
         return existing
 

@@ -97,12 +97,112 @@ _SYSTEM_APPS: frozenset[str] = frozenset({
 })
 
 
+# Splunk default indexes that exist on every deployment with no team-specific
+# content. Enriching them adds dozens of unrelated sourcetypes and pollutes
+# the graph the LLM will reason over.
+_SKIP_INDEX_DEFAULTS: frozenset[str] = frozenset({
+    "history",
+    "main",
+    "splunklogger",
+    "summary",
+})
+
+
 def _is_system_object(obj: dict[str, Any]) -> bool:
     """True iff ``obj`` belongs to a known Splunk system/built-in app."""
     app = _first(obj, _APP_KEYS)
     if not isinstance(app, str):
         return False  # No app info — keep it; better than dropping silently.
     return app in _SYSTEM_APPS
+
+
+# ---- Per-kind system filters ----------------------------------------------
+#
+# The ``app`` field isn't always populated by the MCP server, and even when
+# it is, many built-in objects live in the ``search`` app (which we keep).
+# These name-pattern filters catch the most common system-shipped objects
+# regardless of their declared app.
+
+_SYSTEM_LOOKUP_NAMES: frozenset[str] = frozenset({
+    "about_release.csv",
+    "pura_mark_public_as_private.csv",
+    "security_example_data.csv",
+    "geomaps_data.csv",
+})
+_SYSTEM_LOOKUP_PREFIXES: tuple[str, ...] = ("geo_",)
+_SYSTEM_LOOKUP_SUFFIXES: tuple[str, ...] = (
+    "_example.csv",
+    "_example",
+    ".kmz",
+)
+
+
+def _is_system_lookup(obj: dict[str, Any]) -> bool:
+    name = _first(obj, _NAME_KEYS)
+    if not isinstance(name, str):
+        return False
+    lower = name.lower()
+    if lower in _SYSTEM_LOOKUP_NAMES:
+        return True
+    if any(lower.startswith(p) for p in _SYSTEM_LOOKUP_PREFIXES):
+        return True
+    if any(lower.endswith(s) for s in _SYSTEM_LOOKUP_SUFFIXES):
+        return True
+    return False
+
+
+_SYSTEM_MACRO_PREFIXES: tuple[str, ...] = ("audit_", "saias_", "splunk_")
+# Splunk's built-in eval macros surface with parentheses in the name, e.g.
+# ``comment(1)``, ``histperc(1)``. Filter by substring to catch all arities.
+_SYSTEM_MACRO_SUBSTRINGS: tuple[str, ...] = (
+    "comment(",
+    "histperc(",
+    "perc_to_pct(",
+    "splunk_assist_",
+)
+
+
+def _is_system_macro(obj: dict[str, Any]) -> bool:
+    name = _first(obj, _NAME_KEYS)
+    if not isinstance(name, str):
+        return False
+    lower = name.lower()
+    if any(lower.startswith(p) for p in _SYSTEM_MACRO_PREFIXES):
+        return True
+    if any(s in lower for s in _SYSTEM_MACRO_SUBSTRINGS):
+        return True
+    return False
+
+
+def _is_system_dashboard(obj: dict[str, Any]) -> bool:
+    name = _first(obj, _NAME_KEYS)
+    if isinstance(name, str) and name.startswith("_"):
+        return True
+    # ``is_dashboard`` distinguishes dashboards from forms / HTML views.
+    # Splunk returns string "0"/"1"; we also tolerate the boolean form.
+    is_dashboard = obj.get("is_dashboard")
+    if isinstance(is_dashboard, str) and is_dashboard.strip() == "0":
+        return True
+    if is_dashboard is False:
+        return True
+    return False
+
+
+_PER_KIND_SYSTEM_FILTERS: dict[str, Any] = {
+    "macros": _is_system_macro,
+    "lookups": _is_system_lookup,
+    "views": _is_system_dashboard,
+}
+
+
+def _is_system_for_kind(kind: str, obj: dict[str, Any]) -> bool:
+    """Combine the app-based filter with kind-specific name patterns."""
+    if _is_system_object(obj):
+        return True
+    per_kind = _PER_KIND_SYSTEM_FILTERS.get(kind)
+    if per_kind is not None and per_kind(obj):
+        return True
+    return False
 
 
 def _first(d: dict[str, Any], keys: tuple[str, ...], default: Any = None) -> Any:
@@ -113,19 +213,44 @@ def _first(d: dict[str, Any], keys: tuple[str, ...], default: Any = None) -> Any
 
 
 def _looks_like_alert(obj: dict[str, Any]) -> bool:
-    """A saved search is "an alert" iff it has alerting metadata.
+    """A saved search is "an alert" iff it carries alerting configuration.
 
-    The exact predicate varies; the most reliable signal is ``alert_type`` or
-    ``alert.track`` being set to a non-"none" value.
+    Splunk doesn't distinguish "alert" vs "report" at the object level — both
+    are entries in ``saved/searches``. The discriminator is whether any of
+    the alert-configuration fields are set to non-default values. We check
+    several candidate signals; any one is sufficient.
     """
+    # Primary signal — non-empty/non-"none" alert_type.
     alert_type = obj.get("alert_type")
     if isinstance(alert_type, str) and alert_type.lower() not in ("", "none"):
         return True
+
+    # ``alert.track`` is set to "1"/"true" when alerts are tracked.
     track = obj.get("alert.track")
     if isinstance(track, str) and track.lower() in ("1", "true"):
         return True
     if isinstance(track, bool) and track:
         return True
+
+    # Configured alert ``actions`` (e.g. "email,webhook"). Non-empty = alert.
+    actions = obj.get("actions")
+    if isinstance(actions, str) and actions.strip():
+        return True
+
+    # ``alert.suppress`` defaults to "0" on every saved search; only real
+    # alerts flip it to "1"/"true".
+    suppress = obj.get("alert.suppress")
+    if isinstance(suppress, str) and suppress.strip().lower() in ("1", "true"):
+        return True
+
+    # ``alert.severity`` defaults to "3" everywhere — treat only severities
+    # 4 (high) and 5 (critical) as a stand-alone alert indicator, since those
+    # are never set by accident.
+    severity = obj.get("alert.severity") or obj.get("alert_severity")
+    if isinstance(severity, str) and severity.strip().isdigit():
+        if int(severity.strip()) >= 4:
+            return True
+
     return False
 
 
@@ -233,11 +358,25 @@ class DiscoveryEngine:
     # ---- deep-dive: indexes ----
 
     async def enrich_indexes(self) -> AsyncIterator[Finding]:
-        """For each index, pull detailed info and sourcetype metadata."""
+        """For each non-system, non-empty index, pull info + sourcetype metadata.
+
+        Skipped indexes:
+          - Any whose name starts with ``_`` (Splunk internal: _audit, _internal, ...)
+          - The default empty indexes (``history``, ``main``, ``splunklogger``, ``summary``)
+          - Anything still flagged ``placeholder`` (referenced but not in get_indexes)
+          - After fetching info, indexes with ``totalEventCount == 0`` skip the
+            sourcetype lookup — they'd add no useful structure to the graph.
+        """
         index_nodes = self._graph.nodes_by_type(NodeType.INDEX)
+        skipped = 0
         for node in index_nodes:
             if node.properties.get("placeholder"):
-                # Placeholder — we know it's referenced but not that it exists.
+                continue
+            if node.name.startswith("_"):
+                skipped += 1
+                continue
+            if node.name in _SKIP_INDEX_DEFAULTS:
+                skipped += 1
                 continue
 
             try:
@@ -251,7 +390,15 @@ class DiscoveryEngine:
                 )
                 continue
 
-            # Sourcetypes living in this index.
+            event_count = node.properties.get("totalEventCount") or 0
+            if not event_count:
+                yield Finding(
+                    kind="index_detail",
+                    message=f"profiled index {node.name} — empty, skipping sourcetypes",
+                    data={"index": node.name, "totalEventCount": 0},
+                )
+                continue
+
             try:
                 sts = await self._client.get_metadata(node.name, kind="sourcetypes")
             except SplunkMCPError as exc:
@@ -288,6 +435,12 @@ class DiscoveryEngine:
                 },
             )
 
+        if skipped:
+            yield Finding(
+                kind="indexes_skipped",
+                message=f"skipped {skipped} system / default indexes during enrichment",
+            )
+
     # ---- knowledge objects ----
 
     async def discover_knowledge_objects(self) -> AsyncIterator[Finding]:
@@ -310,7 +463,7 @@ class DiscoveryEngine:
             count = 0
             skipped_system = 0
             for obj in objects:
-                if _is_system_object(obj):
+                if _is_system_for_kind(kind, obj):
                     skipped_system += 1
                     continue
                 if processor(self, node_type, obj):
@@ -330,16 +483,20 @@ class DiscoveryEngine:
     async def resolve_placeholders(self) -> AsyncIterator[Finding]:
         """Try to flesh out nodes that were created as references only.
 
-        Right now this is just macros and lookups — for an index placeholder
-        the existence of the index is itself the signal we want, and we don't
-        attempt to fetch metadata for indexes that ``get_indexes`` didn't
-        return (likely permission-denied / nonexistent).
+        Compares against canonical node IDs (via ``RelationshipGraph.make_id``)
+        rather than raw names so lookups with file extensions like
+        ``known_bad_ips.csv`` correctly match the ``known_bad_ips`` SPL
+        reference placeholder.
         """
         placeholders = self._graph.placeholders()
-        macro_names = [n.name for n in placeholders if n.type == NodeType.MACRO]
-        lookup_names = [n.name for n in placeholders if n.type == NodeType.LOOKUP]
+        macro_placeholder_ids = {
+            n.id for n in placeholders if n.type == NodeType.MACRO
+        }
+        lookup_placeholder_ids = {
+            n.id for n in placeholders if n.type == NodeType.LOOKUP
+        }
 
-        if macro_names:
+        if macro_placeholder_ids:
             try:
                 macros = await self._client.get_knowledge_objects(kind="macros")
             except SplunkMCPError as exc:
@@ -350,13 +507,15 @@ class DiscoveryEngine:
                 )
                 macros = []
             for obj in macros:
-                if _is_system_object(obj):
+                if _is_system_for_kind("macros", obj):
                     continue
                 name = _first(obj, _NAME_KEYS)
-                if isinstance(name, str) and name in macro_names:
+                if not isinstance(name, str):
+                    continue
+                if self._graph.make_id(NodeType.MACRO, name) in macro_placeholder_ids:
                     _process_macro(self, NodeType.MACRO, obj)
 
-        if lookup_names:
+        if lookup_placeholder_ids:
             try:
                 lookups = await self._client.get_knowledge_objects(kind="lookups")
             except SplunkMCPError as exc:
@@ -367,10 +526,12 @@ class DiscoveryEngine:
                 )
                 lookups = []
             for obj in lookups:
-                if _is_system_object(obj):
+                if _is_system_for_kind("lookups", obj):
                     continue
                 name = _first(obj, _NAME_KEYS)
-                if isinstance(name, str) and name in lookup_names:
+                if not isinstance(name, str):
+                    continue
+                if self._graph.make_id(NodeType.LOOKUP, name) in lookup_placeholder_ids:
                     _process_lookup(self, NodeType.LOOKUP, obj)
 
         still_missing = [n.name for n in self._graph.placeholders()]
