@@ -348,7 +348,7 @@ class SplunkMCPClient:
 
     async def get_index_info(self, index_name: str) -> dict[str, Any]:
         """Per-index metadata: total event count, size, retention, etc."""
-        return _expect_dict(await self._call(TOOL_GET_INDEX_INFO, {"index": index_name}))
+        return _expect_dict(await self._call(TOOL_GET_INDEX_INFO, {"index_name": index_name}))
 
     async def get_metadata(
         self,
@@ -447,7 +447,7 @@ class SplunkMCPClient:
         trigger_actions: bool = False,
     ) -> dict[str, Any]:
         """Dispatch a saved search and return its results."""
-        args: dict[str, Any] = {"name": name, "trigger_actions": trigger_actions}
+        args: dict[str, Any] = {"saved_search_name": name, "trigger_actions": trigger_actions}
         if owner is not None:
             args["owner"] = owner
         if app is not None:
