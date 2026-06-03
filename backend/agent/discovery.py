@@ -118,73 +118,95 @@ def _is_system_object(obj: dict[str, Any]) -> bool:
 
 # ---- Per-kind system filters ----------------------------------------------
 #
-# The ``app`` field isn't always populated by the MCP server, and even when
-# it is, many built-in objects live in the ``search`` app (which we keep).
-# These name-pattern filters catch the most common system-shipped objects
-# regardless of their declared app.
+# DEMO-SCOPED ALLOWLISTS
+#
+# A stock Splunk instance ships hundreds of macros, lookups, dashboards and
+# saved searches the team did not write. For the hackathon demo it's easier
+# (and more reliable) to allowlist exactly the objects we created in
+# ``demo-data/setup_splunk.py`` rather than try to enumerate every flavor
+# of Splunk system shipping object.
+#
+# A production deployment of Cairn would invert this strategy — use a
+# comprehensive blocklist of Splunk-shipped names + app filters — but for
+# the demo, the allowlist keeps the graph focused on what the user is
+# actually being onboarded to.
 
-_SYSTEM_LOOKUP_NAMES: frozenset[str] = frozenset({
-    "about_release.csv",
-    "pura_mark_public_as_private.csv",
-    "security_example_data.csv",
-    "geomaps_data.csv",
+_ALLOWED_DASHBOARDS: frozenset[str] = frozenset({
+    "application_health_overview",
+    "security_posture_dashboard",
+    "infrastructure_performance",
 })
-_SYSTEM_LOOKUP_PREFIXES: tuple[str, ...] = ("geo_",)
-_SYSTEM_LOOKUP_SUFFIXES: tuple[str, ...] = (
-    "_example.csv",
-    "_example",
-    ".kmz",
+
+_ALLOWED_MACROS: frozenset[str] = frozenset({
+    "high_severity_filter",
+    "business_hours_only",
+    "exclude_internal_traffic",
+})
+
+_ALLOWED_LOOKUPS: frozenset[str] = frozenset({
+    # Both the file form (as returned by MCP) and the stripped form (as
+    # used in SPL parsing) — defensive against ordering of who creates
+    # the node first.
+    "known_bad_ips.csv",
+    "service_owners.csv",
+    "known_bad_ips",
+    "service_owners",
+})
+
+# Apps whose saved searches we trust. Anything else is treated as a
+# system / third-party app object.
+_SAVED_SEARCH_ALLOWED_APPS: frozenset[str] = frozenset({"search", "launcher"})
+
+# Splunk's built-in maintenance / housekeeping saved searches by name
+# fragment. Substring match (case-insensitive).
+_SAVED_SEARCH_SYSTEM_SUBSTRINGS: tuple[str, ...] = (
+    "bucket merge",
+    "bulk data move",
+)
+_SAVED_SEARCH_SYSTEM_PREFIXES: tuple[str, ...] = (
+    "errors in the last",
 )
 
 
 def _is_system_lookup(obj: dict[str, Any]) -> bool:
     name = _first(obj, _NAME_KEYS)
     if not isinstance(name, str):
-        return False
-    lower = name.lower()
-    if lower in _SYSTEM_LOOKUP_NAMES:
-        return True
-    if any(lower.startswith(p) for p in _SYSTEM_LOOKUP_PREFIXES):
-        return True
-    if any(lower.endswith(s) for s in _SYSTEM_LOOKUP_SUFFIXES):
-        return True
-    return False
-
-
-_SYSTEM_MACRO_PREFIXES: tuple[str, ...] = ("audit_", "saias_", "splunk_")
-# Splunk's built-in eval macros surface with parentheses in the name, e.g.
-# ``comment(1)``, ``histperc(1)``. Filter by substring to catch all arities.
-_SYSTEM_MACRO_SUBSTRINGS: tuple[str, ...] = (
-    "comment(",
-    "histperc(",
-    "perc_to_pct(",
-    "splunk_assist_",
-)
+        return True  # No name — drop it; can't reason about it anyway.
+    return name not in _ALLOWED_LOOKUPS
 
 
 def _is_system_macro(obj: dict[str, Any]) -> bool:
     name = _first(obj, _NAME_KEYS)
     if not isinstance(name, str):
-        return False
-    lower = name.lower()
-    if any(lower.startswith(p) for p in _SYSTEM_MACRO_PREFIXES):
         return True
-    if any(s in lower for s in _SYSTEM_MACRO_SUBSTRINGS):
-        return True
-    return False
+    return name not in _ALLOWED_MACROS
 
 
 def _is_system_dashboard(obj: dict[str, Any]) -> bool:
     name = _first(obj, _NAME_KEYS)
-    if isinstance(name, str) and name.startswith("_"):
+    if not isinstance(name, str):
         return True
-    # ``is_dashboard`` distinguishes dashboards from forms / HTML views.
-    # Splunk returns string "0"/"1"; we also tolerate the boolean form.
-    is_dashboard = obj.get("is_dashboard")
-    if isinstance(is_dashboard, str) and is_dashboard.strip() == "0":
+    return name not in _ALLOWED_DASHBOARDS
+
+
+def _is_system_saved_search(obj: dict[str, Any]) -> bool:
+    """Saved-search filter: tighten by app + name-pattern blocklist.
+
+    Unlike macros/lookups/dashboards we don't hardcode an allowlist of names
+    because we want our 5 demo saved searches *and* our 3 alerts (which are
+    also saved searches with alert config) to pass through naturally based
+    on the app they live in.
+    """
+    app = _first(obj, _APP_KEYS)
+    if isinstance(app, str) and app and app not in _SAVED_SEARCH_ALLOWED_APPS:
         return True
-    if is_dashboard is False:
-        return True
+    name = _first(obj, _NAME_KEYS)
+    if isinstance(name, str):
+        lower = name.lower()
+        if any(s in lower for s in _SAVED_SEARCH_SYSTEM_SUBSTRINGS):
+            return True
+        if any(lower.startswith(p) for p in _SAVED_SEARCH_SYSTEM_PREFIXES):
+            return True
     return False
 
 
@@ -192,6 +214,7 @@ _PER_KIND_SYSTEM_FILTERS: dict[str, Any] = {
     "macros": _is_system_macro,
     "lookups": _is_system_lookup,
     "views": _is_system_dashboard,
+    "saved_searches": _is_system_saved_search,
 }
 
 
@@ -212,21 +235,54 @@ def _first(d: dict[str, Any], keys: tuple[str, ...], default: Any = None) -> Any
     return default
 
 
+# Common severity prefixes in alert names — a strong-enough signal that
+# we treat them as definitional even when the underlying alert.* fields
+# look default (which can happen on certain MCP server versions).
+_ALERT_NAME_PREFIXES: tuple[str, ...] = ("critical:", "warning:", "info:")
+
+
+def _get_alert_field(obj: dict[str, Any], field: str) -> Any:
+    """Return ``alert.<field>`` whether the MCP returned it flat or nested.
+
+    Some Splunk MCP server versions return ``{"alert.severity": "5"}`` (flat
+    dotted key); others nest under ``{"alert": {"severity": "5"}}``. We check
+    both shapes so the alert detector works either way.
+    """
+    flat = obj.get(f"alert.{field}")
+    if flat not in (None, ""):
+        return flat
+    nested = obj.get("alert")
+    if isinstance(nested, dict):
+        val = nested.get(field)
+        if val not in (None, ""):
+            return val
+    return None
+
+
 def _looks_like_alert(obj: dict[str, Any]) -> bool:
     """A saved search is "an alert" iff it carries alerting configuration.
 
     Splunk doesn't distinguish "alert" vs "report" at the object level — both
     are entries in ``saved/searches``. The discriminator is whether any of
-    the alert-configuration fields are set to non-default values. We check
-    several candidate signals; any one is sufficient.
+    the alert-configuration fields are set, OR whether the name uses one of
+    the conventional severity prefixes (``Critical:``, ``Warning:``,
+    ``Info:``). Either signal is sufficient.
     """
+    # ---- Name-based heuristic (resilient to MCP field-shape quirks) ----
+    name = _first(obj, _NAME_KEYS)
+    if isinstance(name, str):
+        stripped = name.strip().lower()
+        if any(stripped.startswith(p) for p in _ALERT_NAME_PREFIXES):
+            return True
+
+    # ---- Field-based signals ----
     # Primary signal — non-empty/non-"none" alert_type.
     alert_type = obj.get("alert_type")
     if isinstance(alert_type, str) and alert_type.lower() not in ("", "none"):
         return True
 
-    # ``alert.track`` is set to "1"/"true" when alerts are tracked.
-    track = obj.get("alert.track")
+    # ``alert.track`` set to "1"/"true" when alerts are tracked.
+    track = _get_alert_field(obj, "track")
     if isinstance(track, str) and track.lower() in ("1", "true"):
         return True
     if isinstance(track, bool) and track:
@@ -237,18 +293,23 @@ def _looks_like_alert(obj: dict[str, Any]) -> bool:
     if isinstance(actions, str) and actions.strip():
         return True
 
-    # ``alert.suppress`` defaults to "0" on every saved search; only real
-    # alerts flip it to "1"/"true".
-    suppress = obj.get("alert.suppress")
+    # ``alert.suppress`` — only real alerts flip it to "1"/"true".
+    suppress = _get_alert_field(obj, "suppress")
     if isinstance(suppress, str) and suppress.strip().lower() in ("1", "true"):
         return True
 
-    # ``alert.severity`` defaults to "3" everywhere — treat only severities
-    # 4 (high) and 5 (critical) as a stand-alone alert indicator, since those
-    # are never set by accident.
-    severity = obj.get("alert.severity") or obj.get("alert_severity")
-    if isinstance(severity, str) and severity.strip().isdigit():
-        if int(severity.strip()) >= 4:
+    # ``alert.severity`` — Splunk's effective default on this MCP version is
+    # 1–2, so anything >=3 is an explicit alert configuration. (Non-numeric
+    # but present, non-empty values are also treated as signal.)
+    severity = _get_alert_field(obj, "severity")
+    if severity is None:
+        severity = obj.get("alert_severity")
+    if severity is not None:
+        sev_str = str(severity).strip()
+        if sev_str.isdigit():
+            if int(sev_str) >= 3:
+                return True
+        elif sev_str and sev_str.lower() not in ("default", "none"):
             return True
 
     return False
@@ -775,12 +836,14 @@ def _process_eventtype(
 _KNOWLEDGE_OBJECT_KINDS: tuple[tuple[str, NodeType, Any], ...] = (
     ("macros", NodeType.MACRO, _process_macro),
     ("lookups", NodeType.LOOKUP, _process_lookup),
-    ("eventtypes", NodeType.EVENTTYPE, _process_eventtype),
     # ``saved_searches`` (with underscore) is the kind name confirmed by the
-    # live MCP server — it returns 100+ items including alerts, which we
-    # then re-type via _looks_like_alert in the processor.
+    # live MCP server — it returns every saved search including alerts,
+    # which we then re-type via _looks_like_alert in the processor.
     ("saved_searches", NodeType.SAVED_SEARCH, _process_saved_search),
     ("views", NodeType.DASHBOARD, _process_dashboard),
+    # ``eventtypes`` was removed: the live Splunk MCP server returns an
+    # error for that kind. Cairn doesn't lose much — eventtypes are rarely
+    # the load-bearing artifact in an onboarding story.
 )
 
 
