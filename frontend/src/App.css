@@ -39,10 +39,12 @@ html, body {
 .screen { min-height: 100vh; }
 .screen-center {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  padding: 24px;
+  padding: 40px 24px;
+  overflow-y: auto;
 }
 
 /* ─── App Header (shared across explore/guide) ───────────────────────────── */
@@ -82,8 +84,8 @@ html, body {
   margin-bottom: 8px;
 }
 
-.logo-emoji { font-size: 32px; line-height: 1; }
-.logo-text {
+.connect-logo .logo-emoji { font-size: 32px; line-height: 1; }
+.connect-logo .logo-text {
   font-size: 36px;
   font-weight: 800;
   letter-spacing: -0.04em;
@@ -93,13 +95,17 @@ html, body {
 .connect-tagline {
   color: var(--text-muted);
   font-size: 14px;
-  margin-bottom: 36px;
+  margin-bottom: 32px;
 }
 
 /* ─── Connect Form ───────────────────────────────────────────────────────── */
 .connect-container {
   width: 100%;
-  max-width: 440px;
+  max-width: 460px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 40px 36px;
 }
 
 .connect-form { display: flex; flex-direction: column; gap: 20px; }

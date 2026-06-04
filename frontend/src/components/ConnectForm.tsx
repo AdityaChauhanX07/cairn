@@ -9,6 +9,7 @@ interface Props {
 }
 
 export default function ConnectForm({ onConnected }: Props) {
+  console.log('ConnectForm rendering');
   const [splunkUrl, setSplunkUrl] = useState(
     () => localStorage.getItem(STORAGE_KEY) ?? DEFAULT_URL
   );

@@ -1,4 +1,5 @@
 export function markdownToHtml(md: string): string {
+  if (!md) return '';
   let html = md;
 
   // Escape HTML entities first (except we want to allow our output through)

@@ -10,8 +10,12 @@ export interface GuideSection {
   content: string;
 }
 
+// Matches OnboardingGuide.to_dict() from the backend: a flat map of
+// section title -> markdown body, plus the full markdown and graph snapshot.
 export interface Guide {
-  [key: string]: GuideSection;
+  markdown: string;
+  sections: Record<string, string>;
+  graph_snapshot?: Record<string, unknown>;
 }
 
 export interface ChatMessage {

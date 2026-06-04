@@ -14,39 +14,80 @@ export async function connect(splunkUrl: string, token: string): Promise<void> {
   }
 }
 
-export function exploreSSE(
+// Shared SSE streaming — used by both explore and generate.
+function streamSSE(
+  url: string,
   onEvent: (event: AgentEvent) => void,
   onDone: () => void,
   onError: (err: string) => void
 ): () => void {
   let cancelled = false;
+  let doneCalled = false;
+
+  function callDone() {
+    if (!doneCalled) {
+      doneCalled = true;
+      onDone();
+    }
+  }
 
   (async () => {
     try {
-      const res = await fetch(`${BASE}/explore`);
+      const res = await fetch(url);
       if (!res.ok || !res.body) {
-        onError(`Explore failed: ${res.statusText}`);
+        onError(`SSE request failed (${res.status}): ${res.statusText}`);
         return;
       }
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
 
       while (!cancelled) {
         const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
+
+        // Decode chunk. When done=true, value may still carry the final bytes.
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done });
+        }
+
+        // Split on SSE event boundaries: handles \n\n and \r\n\r\n
+        const parts = buffer.split(/\r\n\r\n|\n\n/);
+        // Last element is an incomplete block — keep it in the buffer
         buffer = parts.pop() ?? '';
+
         for (const part of parts) {
+          if (!part.trim()) continue;
           const parsed = parseSseBlock(part);
-          if (!parsed) continue;
+          if (!parsed) {
+            console.debug('[SSE] skipping unparsed block:', JSON.stringify(part));
+            continue;
+          }
+          console.log('[SSE] event:', parsed.phase, parsed.message);
           onEvent(parsed);
           if (parsed.phase === 'done') {
-            onDone();
+            callDone();
             reader.cancel();
             return;
           }
+        }
+
+        // Stream is finished — flush whatever is still in the buffer
+        if (done) {
+          if (buffer.trim()) {
+            const parsed = parseSseBlock(buffer);
+            if (parsed) {
+              console.log('[SSE] final buffered event:', parsed.phase, parsed.message);
+              onEvent(parsed);
+              if (parsed.phase === 'done') {
+                callDone();
+                return;
+              }
+            }
+          }
+          // Stream closed cleanly — signal done even without explicit done event
+          callDone();
+          break;
         }
       }
     } catch (e) {
@@ -57,47 +98,20 @@ export function exploreSSE(
   return () => { cancelled = true; };
 }
 
+export function exploreSSE(
+  onEvent: (event: AgentEvent) => void,
+  onDone: () => void,
+  onError: (err: string) => void
+): () => void {
+  return streamSSE(`${BASE}/explore`, onEvent, onDone, onError);
+}
+
 export function generateSSE(
   onEvent: (event: AgentEvent) => void,
   onDone: () => void,
   onError: (err: string) => void
 ): () => void {
-  let cancelled = false;
-
-  (async () => {
-    try {
-      const res = await fetch(`${BASE}/generate`);
-      if (!res.ok || !res.body) {
-        onError(`Generate failed: ${res.statusText}`);
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (!cancelled) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() ?? '';
-        for (const part of parts) {
-          const parsed = parseSseBlock(part);
-          if (!parsed) continue;
-          onEvent(parsed);
-          if (parsed.phase === 'done') {
-            onDone();
-            reader.cancel();
-            return;
-          }
-        }
-      }
-    } catch (e) {
-      if (!cancelled) onError(String(e));
-    }
-  })();
-
-  return () => { cancelled = true; };
+  return streamSSE(`${BASE}/generate`, onEvent, onDone, onError);
 }
 
 export async function getGuide(): Promise<Guide> {
@@ -126,18 +140,22 @@ export async function exportGuide(format: string): Promise<string> {
   return res.text();
 }
 
+// Parse a single SSE event block (the text between blank-line separators).
+// Handles both \n and \r\n line endings.
 function parseSseBlock(block: string): AgentEvent | null {
-  const lines = block.split('\n');
+  const lines = block.split(/\r\n|\n/);
   let dataStr = '';
   for (const line of lines) {
     if (line.startsWith('data:')) {
+      // "data: {...}" or "data:{...}" — slice past the colon, trim whitespace
       dataStr += line.slice(5).trim();
     }
   }
   if (!dataStr) return null;
   try {
     return JSON.parse(dataStr) as AgentEvent;
-  } catch {
+  } catch (e) {
+    console.warn('[SSE] JSON parse failed:', e, 'raw:', dataStr);
     return null;
   }
 }

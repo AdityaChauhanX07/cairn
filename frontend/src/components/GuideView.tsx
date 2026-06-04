@@ -50,7 +50,11 @@ export default function GuideView({ onStartChat, showChat }: Props) {
     );
   }
 
-  const sections = Object.values(guide) as GuideSection[];
+  // The backend returns sections as a { title: content } map, so rebuild
+  // them into the {title, content} shape the cards render.
+  const sections: GuideSection[] = Object.entries(guide.sections ?? {}).map(
+    ([title, content]) => ({ title, content })
+  );
 
   return (
     <div className="guide-container">
@@ -106,7 +110,7 @@ function GuideCard({ section, defaultOpen }: { section: GuideSection; defaultOpe
       {open && (
         <div
           className="guide-card-body"
-          dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content) }}
+          dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content || '') }}
         />
       )}
     </div>

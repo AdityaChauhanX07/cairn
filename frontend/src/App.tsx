@@ -27,6 +27,10 @@ export default function App() {
 
   return (
     <div className="app-root">
+      <div style={{ position: 'fixed', bottom: 8, right: 12, color: '#f59e0b', fontFamily: 'monospace', fontSize: 11, opacity: 0.7, zIndex: 9999, pointerEvents: 'none' }}>
+        state: {appState}
+      </div>
+
       {appState === 'connect' && (
         <div className="screen screen-center">
           <ConnectForm onConnected={handleConnected} />

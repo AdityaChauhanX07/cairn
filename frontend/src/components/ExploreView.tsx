@@ -43,7 +43,10 @@ export default function ExploreView({ onGuideReady }: Props) {
     setEvents([]);
     setPhase('exploring');
     cancelRef.current = exploreSSE(
-      (ev) => setEvents(prev => [...prev, ev]),
+      (ev) => {
+        console.log('SSE event:', ev);
+        setEvents(prev => [...prev, ev]);
+      },
       () => setPhase('explored'),
       (err) => { setError(err); setPhase('idle'); }
     );
@@ -81,6 +84,15 @@ export default function ExploreView({ onGuideReady }: Props) {
           <button className="btn btn-primary" onClick={startExplore}>
             Start Exploration
           </button>
+        </div>
+      )}
+
+      {phase === 'exploring' && events.length === 0 && (
+        <div className="explore-start">
+          <div className="generating-status">
+            <span className="spinner" />
+            Connecting to Splunk and starting exploration...
+          </div>
         </div>
       )}
 
