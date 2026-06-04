@@ -2,17 +2,18 @@
 
 There is one orchestrator per process — Cairn is a single-tenant dev tool,
 not a multi-user SaaS, so the simplest correct concurrency model is a
-single ``Orchestrator`` instance plus an ``asyncio.Lock`` on the explore
-endpoint.
+single ``Orchestrator`` instance. The orchestrator owns its own
+``asyncio.Lock`` for explore / generate_guide; routes don't add another.
 
-Endpoints:
+Endpoints (call order: connect → explore → generate → guide/ask/export):
 
-- ``POST /api/connect``   — connect to a Splunk MCP server
-- ``GET  /api/explore``   — SSE stream of agent events
-- ``GET  /api/guide``     — fetch the generated guide as JSON
-- ``POST /api/ask``       — follow-up Q&A against the discovered graph
-- ``GET  /api/export``    — export the guide (markdown | html)
-- ``GET  /api/health``    — liveness probe
+- ``POST /api/connect``    — connect to a Splunk MCP server
+- ``GET  /api/explore``    — SSE: stream agent events from the discovery flow
+- ``GET  /api/generate``   — SSE: stream events as the onboarding guide is written
+- ``GET  /api/guide``      — fetch the generated guide as JSON
+- ``POST /api/ask``        — follow-up Q&A (optionally runs live SPL)
+- ``GET  /api/export``     — export the guide (markdown | html)
+- ``GET  /api/health``     — liveness probe
 """
 
 from __future__ import annotations
@@ -47,17 +48,36 @@ class _Session:
     orchestrator: Orchestrator
     splunk_url: str
     saia_available: bool
+    has_explored: bool = False
 
 
 _session: _Session | None = None
 _session_lock = asyncio.Lock()
 
 
-def _current_session() -> _Session:
+def _current_session(
+    *,
+    require_explored: bool = False,
+    require_guide: bool = False,
+) -> _Session:
+    """Return the live session, validating prerequisite state.
+
+    Raises 400 with a precise next-step message if the caller is out of order.
+    """
     if _session is None:
         raise HTTPException(
-            status_code=409,
+            status_code=400,
             detail="not connected — POST /api/connect first",
+        )
+    if require_explored and not _session.has_explored:
+        raise HTTPException(
+            status_code=400,
+            detail="no exploration data yet — open GET /api/explore (SSE) first",
+        )
+    if require_guide and _session.orchestrator.guide is None:
+        raise HTTPException(
+            status_code=400,
+            detail="no guide generated yet — open GET /api/generate (SSE) first",
         )
     return _session
 
@@ -99,6 +119,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "connected": _session is not None,
+        "has_explored": _session is not None and _session.has_explored,
         "guide_ready": _session is not None and _session.orchestrator.guide is not None,
     }
 
@@ -167,16 +188,43 @@ async def connect(req: ConnectRequest) -> ConnectResponse:
 
 @router.get("/explore")
 async def explore() -> EventSourceResponse:
-    """Stream agent events as Server-Sent Events.
+    """Stream agent exploration events as Server-Sent Events.
 
     Each event has the JSON-encoded ``AgentEvent`` as its ``data`` field. The
-    ``event`` field is the phase name, so frontends can use ``EventSource``'s
-    typed listeners (e.g. ``source.addEventListener('synthesize', ...)``).
+    ``event`` field is the phase name, so frontends can use ``EventSource``
+    typed listeners (e.g. ``source.addEventListener('investigate', ...)``).
+
+    Only runs the exploration pipeline — guide generation is a separate call
+    to ``GET /api/generate``.
     """
     session = _current_session()
 
     async def event_stream() -> AsyncIterator[dict[str, Any]]:
         async for event in session.orchestrator.explore():
+            yield {
+                "event": event.phase.value,
+                "data": json.dumps(event.to_dict()),
+            }
+        # Mark explored only after the stream completes successfully — if the
+        # client drops mid-stream we'd rather they re-run than have stale state.
+        session.has_explored = True
+
+    return EventSourceResponse(event_stream())
+
+
+@router.get("/generate")
+async def generate() -> EventSourceResponse:
+    """Stream guide-generation events as Server-Sent Events.
+
+    Runs ``Orchestrator.generate_guide()`` — one Groq call per section, five
+    sections total. Each event's ``event`` field is the phase name; ``data``
+    is the serialized ``AgentEvent``. When the stream closes, the guide is
+    available via ``GET /api/guide``.
+    """
+    session = _current_session(require_explored=True)
+
+    async def event_stream() -> AsyncIterator[dict[str, Any]]:
+        async for event in session.orchestrator.generate_guide():
             yield {
                 "event": event.phase.value,
                 "data": json.dumps(event.to_dict()),
@@ -188,24 +236,20 @@ async def explore() -> EventSourceResponse:
 @router.get("/guide")
 async def get_guide() -> dict[str, Any]:
     """Return the synthesized onboarding guide as JSON."""
-    session = _current_session()
-    guide = session.orchestrator.guide
-    if guide is None:
-        raise HTTPException(
-            status_code=409,
-            detail="guide not ready — run /api/explore first",
-        )
-    return guide.to_dict()
+    session = _current_session(require_guide=True)
+    return session.orchestrator.guide.to_dict()  # type: ignore[union-attr]
 
 
 @router.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest) -> AskResponse:
-    """Free-form follow-up Q&A grounded in the discovered graph."""
-    session = _current_session()
-    if session.orchestrator.guide is None:
-        # We can still answer — the graph is populated even before synthesis —
-        # but warn callers.
-        logger.info("ask() called before guide synthesis completed")
+    """Free-form follow-up Q&A grounded in the discovered graph.
+
+    Requires a prior ``/api/explore`` for graph context. The orchestrator's
+    ``ask`` will also run live SPL / dispatch a named saved search when the
+    question implies fresh data — those MCP calls happen inline and fall back
+    to context-only on failure.
+    """
+    session = _current_session(require_explored=True)
     answer = await session.orchestrator.ask(req.question)
     return AskResponse(answer=answer)
 
@@ -215,10 +259,9 @@ async def export_guide(
     format: str = Query("markdown", pattern="^(markdown|html)$"),
 ) -> Response:
     """Export the guide as markdown or a minimal HTML document."""
-    session = _current_session()
+    session = _current_session(require_guide=True)
     guide = session.orchestrator.guide
-    if guide is None:
-        raise HTTPException(status_code=409, detail="guide not ready")
+    assert guide is not None  # require_guide check above guarantees this
 
     if format == "markdown":
         return PlainTextResponse(

@@ -1,61 +1,63 @@
 ## Critical Alerts & What They Mean
 
-### Critical: Firewall Rule Violations
-This alert is triggered when more than 10 blocked traffic events are detected from the same source IP address, destination port, and firewall rule within the `firewall_logs` index. The data feeding this alert comes from your firewall devices, which log blocked traffic events into the `firewall_logs` index. When this alert fires at 3am, the on-call engineer should investigate the source IP addresses and destination ports that are generating the blocked traffic, and check the `known_bad_ips` lookup table to see if these IP addresses are known to be malicious.
+### Critical Alerts & What They Mean
+The following alerts are critical and require immediate attention from the on-call engineer.
 
-### Critical: Multiple Failed Logins from Same IP
-This alert is triggered when more than 5 failed login attempts are detected from the same source IP address within the `auth_events` index, and the events pass the `high_severity_filter` macro. The data feeding this alert comes from authentication-related events, such as login attempts, which are logged into the `auth_events` index. When this alert fires at 3am, the on-call engineer should investigate the source IP addresses that are generating the failed login attempts, check the `known_bad_ips` lookup table to see if these IP addresses are known to be malicious, and consider blocking or blacklisting the IP addresses to prevent further brute-force login attacks.
+#### Critical: Firewall Rule Violations
+This alert is triggered when the firewall blocks traffic more than 10 times from the same source IP address, destination port, and rule. The data for this alert comes from the `firewall_logs` index, which stores all firewall events, and is enriched by the `known_bad_ips` lookup table to identify potential threats. When this alert fires at 3am, the on-call engineer should investigate the source IP addresses and rules involved to determine if they are related to known malicious activity and take necessary actions to prevent further potential security breaches.
+
+#### Critical: Multiple Failed Logins from Same IP
+This alert is triggered when there are more than 5 failed login attempts from the same IP address, and the attempts are filtered by a macro called `high_severity_filter`. The data for this alert comes from the `auth_events` index, which stores all authentication events, and is enriched by the `known_bad_ips` lookup table to identify potential threats. When this alert fires at 3am, the on-call engineer should investigate the IP addresses involved to determine if they are related to known bad actors and take necessary actions to prevent further potential security breaches, such as blocking the IP address or notifying the security team.
 
 ## Your Data Landscape
 
-### Authentication and Authorization
-* **auth_events**: 24 events, sourcetype `auth_log`, search for login attempts or authentication failures.
-* **firewall_logs**: 12 events, sourcetype `firewall_log`, search for blocked traffic or potential security threats.
-
-### Infrastructure and Application Metrics
-* **app_metrics**: 12 events, sourcetype `app_metrics`, search for performance issues or application errors.
-* **main**: 18886 events, unknown sourcetype, search for general system logs or unknown data sources.
-
 ### Web Traffic
-* **web_logs**: 16 events, sourcetype `access_log`, search for website usage patterns or potential issues.
-
-### Deployment and Change Management
-* **deploy_logs**: 8 events, sourcetype `deploy_log`, search for deployment history or issues during deployment.
-
-### Unused or Internal Indexes
-* **history**: 0 events, unknown sourcetype, ignored.
-* **splunklogger**: 0 events, unknown sourcetype, ignored.
-* **summary**: 0 events, unknown sourcetype, ignored.
+* **web_logs**: 16 events, primary sourcetype `access_log`, search for website usage patterns and user engagement metrics.
+### Authentication and Authorization
+* **auth_events**: 24 events, primary sourcetype `auth_log`, search for login attempts, failed authentications, and user access control issues.
+* **firewall_logs**: 12 events, primary sourcetype `firewall_log`, search for incoming traffic patterns, blocked requests, and potential security threats.
+### Infrastructure Metrics
+* **app_metrics**: 12 events, primary sourcetype `app_metrics`, search for performance issues, latency, and error rates in applications.
+### Deployment Logs
+* **deploy_logs**: 8 events, primary sourcetype `deploy_log`, search for deployment history, success/failure rates, and environmental changes.
+### Misc
+* **history**: 0 events, no primary sourcetype, search for nothing as this index is empty and not configured for data storage.
+* **main**: 18886 events, no primary sourcetype, search for generic system events, but be aware that this index may contain a mix of different data types and sourcetypes.
+* **splunklogger**: 0 events, no primary sourcetype, search for nothing as this index is empty and not configured for data storage.
+* **summary**: 0 events, no primary sourcetype, search for nothing as this index is empty and not configured for data storage.
 
 ## Your Team's Dashboards
 
 ### Application Health Overview
-The Application Health Overview dashboard answers the question: "What is the overall health and performance of my application?" 
-An engineer should look for indicators of application performance, such as error rates, response times, and system resource utilization, although with no panel SPLs available, there's no data to review.
+The Application Health Overview dashboard answers the question: "What is the current health and performance of our application?" 
+An engineer should look for any indications of errors, latency issues, or other performance problems on this dashboard, but since there are no panels or SPLs available, the dashboard is currently empty and not providing any useful information.
 
 ### Infrastructure Performance
-The Infrastructure Performance dashboard answers the question: "How is my infrastructure performing in terms of resource utilization and system health?" 
-An engineer should look for metrics on CPU usage, memory utilization, disk usage, and network traffic, but since there are no panels, no specific data can be analyzed.
+The Infrastructure Performance dashboard answers the question: "How is our infrastructure performing in terms of resource utilization and throughput?" 
+As there are no panels or SPLs, an engineer won't be able to find any meaningful data on this dashboard, and it should be populated with relevant metrics and logs to provide insights into infrastructure performance.
 
 ### Security Posture Dashboard
-The Security Posture Dashboard answers the question: "What is my current security posture, and are there any potential vulnerabilities or threats?" 
-An engineer should look for visualizations of security-related data, such as threat alerts, system vulnerabilities, and authentication attempts, but without any panels or SPLs, no assessment can be made.
+The Security Posture Dashboard answers the question: "What is our current security posture, and are there any potential vulnerabilities or threats?" 
+This dashboard is also empty, with no panels or SPLs to provide information on security-related events, threats, or vulnerabilities, so an engineer should look for this dashboard to be populated with relevant security metrics and data in the future.
 
 ## The Shorthand
 
-### Shorthand Explanation
-The shorthand section contains macros and lookups that simplify Splunk searches and provide reusable blocks of logic. 
+### Shorthand 
+The shorthand section contains macros and lookups that simplify Splunk queries and improve readability. 
 
-The `business_hours_only` macro filters events to only those that occur between 8am and 6pm, Monday through Friday, based on the `date_hour` and `date_wday` fields. However, it is not currently used by any artifacts.
+#### Macros
+Macros are reusable pieces of code that encode specific behaviors. 
+* `business_hours_only`: This macro filters events to only those occurring between 8am and 6pm on weekdays. Although it's not currently used in any searches, it's likely intended to help analyze traffic or usage patterns during typical working hours. 
+* `exclude_internal_traffic`: This macro excludes events with source IP addresses within the private IP ranges (10.0.0.* and 192.168.*). It's not currently used, but its purpose is to ignore internal network traffic when analyzing data. 
+* `high_severity_filter`: This macro filters events with high or critical severity levels. It's used in the "Critical: Multiple Failed Logins from Same IP" search to focus on severe security incidents.
 
-The `exclude_internal_traffic` macro filters out events with source IP addresses in the `10.0.0.*` and `192.168.*` ranges. Like `business_hours_only`, this macro is not currently used by any artifacts.
-
-In contrast, the `high_severity_filter` macro is used by the "Critical: Multiple Failed Logins from Same IP" artifact to filter events with a severity of either "critical" or "high".
-
-The `known_bad_ips.csv` lookup is used by the "Critical: Firewall Rule Violations" and "Critical: Multiple Failed Logins from Same IP" artifacts to check IP addresses against a list of known bad IPs.
-
-The `service_owners.csv` lookup is not currently used by any artifacts, but can be used to map services to their respective owners.
+#### Lookups
+Lookups are reference tables that map values to additional information. 
+* `known_bad_ips.csv`: This lookup contains a list of known malicious IP addresses. It's used in the "Critical: Firewall Rule Violations" and "Critical: Multiple Failed Logins from Same IP" searches to identify potential security threats. 
+* `service_owners.csv`: This lookup maps services to their respective owners, but it's not currently used in any searches. Its purpose might be to facilitate communication or assignment of responsibilities when issues arise.
 
 ## Who Knows What
 
-There are no ownership signals defined, so there is no specific guidance on who to ask for help. As you navigate the onboarding process, you may need to reach out to various teams or individuals for support, but for now, please refer to general support channels for assistance.
+Since there are no ownership signals provided, there is no specific guidance on who to ask. If you have any questions or need help, you can try reaching out to your team lead or supervisor for more information on who to contact for specific topics. 
+
+As more information becomes available, this section will be updated to include the relevant owners, the artifacts they are responsible for, and any specific tasks or reports they run, such as those related to `usage_count_24h`.

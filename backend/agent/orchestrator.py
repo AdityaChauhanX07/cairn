@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover — older groq versions
     RateLimitError = Exception  # type: ignore[misc,assignment]
 
 from config import Settings, get_settings
-from mcp_client import SplunkMCPClient
+from mcp_client import SplunkMCPClient, SplunkMCPError
 
 from .discovery import DiscoveryEngine, Finding
 from .graph import EdgeType, NodeType, RelationshipGraph, SPLParser
@@ -504,19 +504,116 @@ class Orchestrator:
     # ---- Follow-up Q&A ----
 
     async def ask(self, question: str) -> str:
-        """Answer a follow-up question grounded in the discovered graph."""
+        """Answer a follow-up question grounded in the discovered graph.
+
+        When the question implies "fresh data" (e.g. *"how many failed logins
+        in the last hour?"*), we also run a live Splunk query to ground the
+        answer in current results. The flow is:
+
+          1. Always include the discovered graph as ground-truth context.
+          2. If the question contains live-data keywords, ask the LLM to
+             generate a short SPL query against the known indexes. Run it
+             via ``splunk_run_query`` and add the result rows to context.
+          3. If the question names a known saved search, dispatch it via
+             ``splunk_run_saved_search`` and add those rows too.
+          4. Ask the LLM for the final answer with the (possibly enriched)
+             context.
+
+        Any MCP failure along the way falls back silently to context-only —
+        we still return *some* answer rather than 500-ing on the user.
+        """
         snapshot = self._graph.to_dict()
-        prompt = (
+        live_sections: list[str] = []
+
+        # ---- live SPL query (if the question implies fresh data) ----
+        if _wants_live_data(question):
+            try:
+                spl = await self._draft_live_spl(question)
+            except Exception as exc:
+                logger.info("live-SPL generation failed: %s", exc)
+                spl = None
+            if spl and spl.upper() != "NO_QUERY":
+                try:
+                    result = await self._mcp.run_query(spl, earliest="0")
+                except SplunkMCPError as exc:
+                    logger.info("live SPL %r failed: %s", spl, exc)
+                else:
+                    live_sections.append(
+                        f"LIVE QUERY (`{spl}`):\n"
+                        f"{json.dumps(result, indent=2, default=str)[:3000]}"
+                    )
+
+        # ---- saved-search dispatch (if the question names one) ----
+        named_search = self._match_known_search(question)
+        if named_search is not None:
+            try:
+                ss_result = await self._mcp.run_saved_search(named_search)
+            except SplunkMCPError as exc:
+                logger.info("saved-search %r failed: %s", named_search, exc)
+            else:
+                live_sections.append(
+                    f"SAVED SEARCH RESULTS (`{named_search}`):\n"
+                    f"{json.dumps(ss_result, indent=2, default=str)[:3000]}"
+                )
+
+        prompt_parts = [
             "You are Cairn, an AI assistant that already explored this Splunk "
             "environment and can answer questions about it. Use the relationship "
             "graph below as ground truth. Where you reference an artifact, name "
             "it precisely. If the graph doesn't contain the answer, say so "
             "explicitly rather than guessing. Write in a warm, direct style — "
-            "you're talking to an engineer who just got paged.\n\n"
-            f"QUESTION: {question}\n\n"
-            f"GRAPH:\n{json.dumps(snapshot, indent=2)[:12000]}"
-        )
+            "you're talking to an engineer who just got paged.\n",
+            f"QUESTION: {question}\n",
+            f"GRAPH:\n{json.dumps(snapshot, indent=2)[:12000]}",
+        ]
+        prompt_parts.extend(live_sections)
+        prompt = "\n\n".join(prompt_parts)
         return (await self._llm_call(prompt, max_tokens=1000)).strip()
+
+    async def _draft_live_spl(self, question: str) -> str:
+        """Ask the LLM for an SPL query that answers ``question``.
+
+        Returns the SPL string (or ``"NO_QUERY"`` if not answerable via SPL).
+        """
+        index_summaries: list[dict[str, Any]] = []
+        for node in self._graph.nodes_by_type(NodeType.INDEX):
+            if node.properties.get("placeholder"):
+                continue
+            if node.name.startswith("_"):
+                continue
+            sourcetypes = [
+                e.source.split(":", 1)[1] if ":" in e.source else e.source
+                for e in self._graph.in_edges(node.id, EdgeType.SOURCETYPE_OF)
+            ]
+            index_summaries.append({"index": node.name, "sourcetypes": sourcetypes[:10]})
+
+        prompt = (
+            "You are a Splunk SPL expert. Given this question about a Splunk "
+            "environment, generate a short SPL query to answer it.\n\n"
+            f"Available indexes:\n{json.dumps(index_summaries, indent=2)}\n\n"
+            f"Question: {question}\n\n"
+            "Respond with ONLY the SPL query, nothing else. Include `| head 100` "
+            "at the end if the query would return raw events (omit for aggregations). "
+            "If the question can't be answered with a query, respond with NO_QUERY."
+        )
+        text = (await self._llm_call(prompt, max_tokens=300)).strip()
+        return _clean_spl_response(text)
+
+    def _match_known_search(self, question: str) -> str | None:
+        """Return the name of a saved search / alert mentioned in ``question``.
+
+        Case-insensitive substring match against graph node names. Returns
+        the longest match (so "Multiple Failed Logins" wins over "Logins").
+        """
+        haystack = question.lower()
+        best: str | None = None
+        best_len = 0
+        for kind in (NodeType.ALERT, NodeType.SAVED_SEARCH):
+            for node in self._graph.nodes_by_type(kind):
+                if node.name and node.name.lower() in haystack and len(node.name) > best_len:
+                    best = node.name
+                    best_len = len(node.name)
+        return best
 
 
 # ---- Section definitions --------------------------------------------------
@@ -614,6 +711,46 @@ def _extract_text(response: Any) -> str:
         return ""
     content = getattr(message, "content", None)
     return content if isinstance(content, str) else ""
+
+
+# Keywords in a follow-up question that hint the user wants *current* data
+# pulled from Splunk, not just a recap of what was discovered at explore time.
+_LIVE_DATA_KEYWORDS: tuple[str, ...] = (
+    "show me",
+    "run",
+    "how many",
+    "latest",
+    "recent",
+    "current",
+    "right now",
+    "check",
+    "look up",
+    "what are the",
+    "count of",
+    "list the",
+)
+
+
+def _wants_live_data(question: str) -> bool:
+    lower = question.lower()
+    return any(kw in lower for kw in _LIVE_DATA_KEYWORDS)
+
+
+def _clean_spl_response(text: str) -> str:
+    """Strip code fences / language hints from an LLM-generated SPL response."""
+    s = text.strip()
+    if s.startswith("```"):
+        # Drop the leading fence + optional language tag.
+        s = s.lstrip("`")
+        if s.lower().startswith("spl"):
+            s = s[3:]
+        elif s.lower().startswith("splunk"):
+            s = s[6:]
+        s = s.strip("`").strip()
+    # Drop trailing fence if any.
+    if s.endswith("```"):
+        s = s[: -3].rstrip()
+    return s.strip()
 
 
 def _strip_leading_h2(body: str, title: str) -> str:
