@@ -323,8 +323,17 @@ def _looks_like_alert(obj: dict[str, Any]) -> bool:
 # ---- Engine ----------------------------------------------------------------
 
 
+LLMCall = Any  # Callable[[str, int], Awaitable[str]] — kept loose to avoid Callable noise
+
+
 class DiscoveryEngine:
-    """Coordinates MCP discovery calls and writes into the graph."""
+    """Coordinates MCP discovery calls and writes into the graph.
+
+    Optionally accepts an ``llm_call`` coroutine — the orchestrator passes
+    its own rate-limited helper here so that discovery can ask the LLM to
+    explain SPL strings on user-facing artifacts without owning a Groq
+    client itself.
+    """
 
     def __init__(
         self,
@@ -332,10 +341,12 @@ class DiscoveryEngine:
         graph: RelationshipGraph,
         *,
         parser: SPLParser | None = None,
+        llm_call: LLMCall | None = None,
     ) -> None:
         self._client = client
         self._graph = graph
         self._parser = parser or SPLParser()
+        self._llm_call = llm_call
 
     # ---- orient ----
 
@@ -732,6 +743,84 @@ class DiscoveryEngine:
             message=f"sampled {name}: {len(rows)} rows",
             data={"name": name, "row_count": len(rows), "first_rows": rows[:3]},
         )
+
+    # ---- SPL explanation via the LLM hook ----
+
+    async def explain_user_facing_spls(
+        self,
+        node_types: tuple[NodeType, ...] = (NodeType.ALERT,),
+        *,
+        max_explanations: int = 5,
+        max_tokens: int = 500,
+    ) -> AsyncIterator[Finding]:
+        """Ask the LLM to plain-English each user-facing SPL string.
+
+        Default scope is alerts only — they're the artifacts a 3am-paged
+        engineer most needs to understand, and limiting the set keeps us
+        under the Groq free-tier rate limit. ``max_explanations`` caps
+        total LLM calls regardless of node count.
+
+        Skips silently if no ``llm_call`` was passed to the engine.
+        """
+        if self._llm_call is None:
+            yield Finding(
+                kind="explanations",
+                message="no LLM hook configured — skipping SPL explanations",
+            )
+            return
+
+        targets = []
+        for nt in node_types:
+            for node in self._graph.nodes_by_type(nt):
+                spl = node.properties.get("spl")
+                if not isinstance(spl, str) or not spl.strip():
+                    continue
+                if node.properties.get("spl_explanation"):
+                    continue  # already explained in a previous pass
+                targets.append(node)
+                if len(targets) >= max_explanations:
+                    break
+            if len(targets) >= max_explanations:
+                break
+
+        if not targets:
+            yield Finding(
+                kind="explanations",
+                message="no SPL strings to explain (alerts have no SPL or already explained)",
+            )
+            return
+
+        prompt_template = (
+            "Explain the following SPL query in plain English for a Splunk "
+            "newcomer being onboarded onto this deployment. Identify what it "
+            "searches, what fields it filters/aggregates, and what macros / "
+            "lookups / indexes it depends on. Be concise — 3 short paragraphs "
+            "max.\n\nSPL:\n```\n{spl}\n```"
+        )
+
+        for node in targets:
+            spl = node.properties["spl"]
+            try:
+                explanation = await self._llm_call(
+                    prompt_template.format(spl=spl), max_tokens
+                )
+            except Exception as exc:
+                yield Finding(
+                    kind="error",
+                    message=f"SPL explanation failed for {node.name}",
+                    detail=str(exc),
+                )
+                continue
+            node.properties["spl_explanation"] = explanation
+            yield Finding(
+                kind="explanation",
+                message=f"explained SPL for {node.type.value}:{node.name}",
+                data={
+                    "node": node.name,
+                    "type": node.type.value,
+                    "explanation_preview": explanation[:240],
+                },
+            )
 
     # ---- gentle pacing helpers for the orchestrator ----
 
