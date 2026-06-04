@@ -9,7 +9,6 @@ interface Props {
 }
 
 export default function ConnectForm({ onConnected }: Props) {
-  console.log('ConnectForm rendering');
   const [splunkUrl, setSplunkUrl] = useState(
     () => localStorage.getItem(STORAGE_KEY) ?? DEFAULT_URL
   );
@@ -33,13 +32,16 @@ export default function ConnectForm({ onConnected }: Props) {
   }
 
   return (
-    <div className="connect-container">
+    <>
       <div className="connect-logo">
         <span className="logo-emoji">🪨</span>
         <span className="logo-text">Cairn</span>
       </div>
-      <p className="connect-tagline">Splunk environment guide generator</p>
+      <p className="connect-tagline">
+        Point Cairn at a Splunk instance and it'll explore it for you.
+      </p>
 
+      <div className="connect-container">
       <form className="connect-form" onSubmit={handleSubmit}>
         <div className="form-group">
           <label className="form-label" htmlFor="splunk-url">Splunk MCP URL</label>
@@ -68,7 +70,17 @@ export default function ConnectForm({ onConnected }: Props) {
           />
         </div>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && (
+          <div className="error-banner">
+            <span className="error-icon">⚠</span>
+            <span>
+              <span className="error-title">Couldn't connect</span>
+              <span className="error-hint">
+                {error} — double-check the MCP URL and that your auth token is valid.
+              </span>
+            </span>
+          </div>
+        )}
 
         <button
           className="btn btn-primary btn-full"
@@ -76,9 +88,10 @@ export default function ConnectForm({ onConnected }: Props) {
           disabled={loading || !splunkUrl || !token}
         >
           {loading ? <span className="spinner" /> : null}
-          {loading ? 'Connecting...' : 'Connect'}
+          {loading ? 'Connecting…' : 'Connect'}
         </button>
       </form>
-    </div>
+      </div>
+    </>
   );
 }

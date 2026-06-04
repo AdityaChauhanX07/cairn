@@ -25,6 +25,11 @@ export default function App() {
     }, 100);
   }
 
+  function handleReExplore() {
+    setShowChat(false);
+    setAppState('explore');
+  }
+
   return (
     <div className="app-root">
       {appState === 'connect' && (
@@ -41,7 +46,7 @@ export default function App() {
 
       {appState === 'guide' && (
         <div className="screen">
-          <GuideView onStartChat={handleStartChat} showChat={showChat} />
+          <GuideView onStartChat={handleStartChat} onReExplore={handleReExplore} showChat={showChat} />
           {showChat && (
             <div id="chat-section" className="chat-section">
               <ChatView />

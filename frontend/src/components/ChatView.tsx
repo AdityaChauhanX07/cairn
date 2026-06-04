@@ -3,8 +3,12 @@ import { askQuestion } from '../utils/api';
 import { markdownToHtml } from '../utils/markdown';
 import type { ChatMessage } from '../types';
 
-const SUGGESTED_QUESTION =
-  "This alert 'Critical: Multiple Failed Logins from Same IP' paged me at 3am. What does it mean and what should I do?";
+const SUGGESTED_QUESTIONS = [
+  "This alert 'Critical: Multiple Failed Logins from Same IP' paged me at 3am. What does it mean and what should I do?",
+  'Which indexes hold authentication data?',
+  'What does the high_severity_filter macro do?',
+  'Who owns the most alerts?',
+];
 
 export default function ChatView() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -42,8 +46,8 @@ export default function ChatView() {
     }
   }
 
-  function useSuggested() {
-    setInput(SUGGESTED_QUESTION);
+  function useSuggested(q: string) {
+    setInput(q);
     inputRef.current?.focus();
   }
 
@@ -56,10 +60,14 @@ export default function ChatView() {
 
       {messages.length === 0 && !loading && (
         <div className="chat-suggestion">
-          <span className="suggestion-label">Suggested question</span>
-          <button className="suggestion-btn" onClick={useSuggested}>
-            {SUGGESTED_QUESTION}
-          </button>
+          <span className="suggestion-label">Try asking</span>
+          <div className="suggestion-pills">
+            {SUGGESTED_QUESTIONS.map((q, i) => (
+              <button key={i} className="suggestion-btn" onClick={() => useSuggested(q)}>
+                {q}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
