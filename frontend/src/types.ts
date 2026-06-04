@@ -25,6 +25,8 @@ export interface GraphNode {
   id: string;
   name: string;
   type: GraphNodeType;
+  eventCount?: number;
+  sourcetypes?: string[];
 }
 
 export interface GraphEdge {

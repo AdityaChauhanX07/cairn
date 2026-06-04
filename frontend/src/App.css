@@ -739,6 +739,44 @@ html, body {
   padding: 1px 6px;
   color: var(--accent-amber);
 }
+/* index tiles — sized by event volume, tinted by category (ledge top border) */
+.index-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.index-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 10px 14px;
+  border-radius: 6px;
+  border-top: 2px solid;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+.index-tile:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.index-tile-name {
+  font-family: var(--font-machine);
+  font-size: 0.78rem;
+  margin-bottom: 4px;
+}
+.index-tile-count {
+  font-family: var(--font-machine);
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+.index-tile-meta {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+}
+
 /* clickable Splunk-object chips — scroll to a section / light up the graph */
 .chip-clickable {
   cursor: pointer;

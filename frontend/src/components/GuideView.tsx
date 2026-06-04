@@ -1,10 +1,14 @@
-import { useState, useEffect, useMemo, useRef, forwardRef } from 'react';
+import { useState, useEffect, useMemo, useRef, forwardRef, type ReactNode } from 'react';
 import { getGuide, exportGuide } from '../utils/api';
 import { markdownToHtml } from '../utils/markdown';
 import { loadEnv, envSummaryLine } from '../utils/env';
 import RelationshipGraph from './RelationshipGraph';
 import ChatView from './ChatView';
+import IndexTiles, { categorize, type IndexTile } from './IndexTiles';
 import type { Guide, GuideSection, GraphNode, GraphEdge } from '../types';
+
+// Title of the section the index-tile visualization belongs above.
+const DATA_LANDSCAPE_TITLE = 'Your Data Landscape';
 
 interface Props {
   onReExplore: () => void;
@@ -152,6 +156,21 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
   const counts = useMemo(() => (guide ? deriveCounts(guide) : null), [guide]);
   const graph = useMemo(() => (guide ? deriveGuideGraph(guide) : { nodes: [], edges: [] }), [guide]);
   const env = useMemo(() => loadEnv(), []);
+
+  // User-created index nodes as sized tiles, largest volume first.
+  const indexTiles = useMemo<IndexTile[]>(
+    () =>
+      graph.nodes
+        .filter(n => n.type === 'index' && !n.name.startsWith('_'))
+        .map(n => ({
+          name: n.name,
+          eventCount: n.eventCount ?? 0,
+          category: categorize(n.name),
+          sourcetype: n.sourcetypes?.[0],
+        }))
+        .sort((a, b) => b.eventCount - a.eventCount),
+    [graph]
+  );
 
   // Scroll-spy: highlight the section nearest the top of the viewport.
   useEffect(() => {
@@ -343,6 +362,11 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
                   open={!closedSections.has(i)}
                   onToggle={() => toggleSection(i)}
                   onChipClick={onChipClick}
+                  topSlot={
+                    section.title === DATA_LANDSCAPE_TITLE ? (
+                      <IndexTiles indexes={indexTiles} />
+                    ) : undefined
+                  }
                 />
               ))}
             </div>
@@ -382,10 +406,11 @@ interface CardProps {
   open: boolean;
   onToggle: () => void;
   onChipClick?: (term: string) => void;
+  topSlot?: ReactNode; // rendered above the markdown body (e.g. the index tiles)
 }
 
 const GuideCard = forwardRef<HTMLDivElement, CardProps>(function GuideCard(
-  { index, section, counts, open, onToggle, onChipClick },
+  { index, section, counts, open, onToggle, onChipClick, topSlot },
   ref
 ) {
   const meta = SECTION_META[section.title] ?? { accent: 'var(--border)', summary: () => '' };
@@ -414,11 +439,10 @@ const GuideCard = forwardRef<HTMLDivElement, CardProps>(function GuideCard(
         <span className="guide-card-toggle">{open ? '−' : '+'}</span>
       </button>
       {open && (
-        <div
-          className="guide-card-body"
-          onClick={handleBodyClick}
-          dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content || '') }}
-        />
+        <div className="guide-card-body" onClick={handleBodyClick}>
+          {topSlot}
+          <div dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content || '') }} />
+        </div>
       )}
     </div>
   );

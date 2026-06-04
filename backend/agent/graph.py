@@ -462,9 +462,20 @@ class RelationshipGraph:
             if node.type == NodeType.INDEX and node.name.startswith("_"):
                 continue
             node_ids.add(node.id)
-            nodes_out.append(
-                {"id": node.id, "name": node.name, "type": node.type.value}
-            )
+            node_dict: dict[str, Any] = {
+                "id": node.id,
+                "name": node.name,
+                "type": node.type.value,
+            }
+            # Index nodes carry the data the tile view needs: event volume and
+            # the sourcetypes flowing into them (reached via SOURCETYPE_OF edges).
+            if node.type == NodeType.INDEX:
+                node_dict["eventCount"] = node.properties.get("totalEventCount") or 0
+                node_dict["sourcetypes"] = [
+                    e.source.split(":", 1)[1] if ":" in e.source else e.source
+                    for e in self.in_edges(node.id, EdgeType.SOURCETYPE_OF)
+                ][:10]
+            nodes_out.append(node_dict)
 
         edges_out: list[dict[str, Any]] = []
         for edge in self._edges:
