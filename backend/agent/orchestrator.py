@@ -47,6 +47,23 @@ from .graph import EdgeType, NodeType, RelationshipGraph, SPLParser
 logger = logging.getLogger(__name__)
 
 
+# User-facing fallbacks shown when the LLM can't be reached (e.g. Groq's
+# free-tier daily/RPM cap is hit and retries are exhausted). We never surface
+# raw error JSON or stack traces as guide / answer content.
+_RATE_LIMIT_SECTION_FALLBACK = (
+    "[This section could not be generated due to API rate limits. "
+    "Please wait a few minutes and try re-exploring.]"
+)
+_SECTION_UNAVAILABLE_MESSAGE = (
+    "This section is temporarily unavailable. The AI service rate limit was "
+    "reached. Please re-explore in a few minutes to generate this content."
+)
+_ASK_UNAVAILABLE_MESSAGE = (
+    "I'm temporarily unable to answer — the AI service rate limit was reached. "
+    "Please try again in a few minutes."
+)
+
+
 # ---- Events ---------------------------------------------------------------
 
 
@@ -202,7 +219,11 @@ class Orchestrator:
                     raise
                 logger.warning("Groq call failed (attempt %d): %s — retrying", attempt + 1, exc)
                 await asyncio.sleep(1.0)
-        raise RuntimeError(f"Groq call exhausted retries: {last_exc}")
+        # Retries exhausted. If we got here it was rate-limit driven (other
+        # exceptions bubble up above); return a user-friendly fallback rather
+        # than raising raw error JSON up into guide / answer content.
+        logger.error("Groq call exhausted retries (rate-limited): %s", last_exc)
+        return _RATE_LIMIT_SECTION_FALLBACK
 
     # ---- SPL explanation (MCP-first, LLM fallback) ----
 
@@ -356,7 +377,7 @@ class Orchestrator:
             f"SAMPLE ALERTS:\n{json.dumps(sample_alerts, indent=2)}\n\n"
             f"SAMPLE SAVED SEARCHES:\n{json.dumps(sample_saved, indent=2)}\n"
         )
-        return (await self._llm_call(prompt, max_tokens=500)).strip()
+        return (await self._llm_call(prompt, max_tokens=300)).strip()
 
     # ---- Guide generation (5 per-section LLM calls) ----
 
@@ -387,7 +408,7 @@ class Orchestrator:
             context = context_fn(self)
             prompt = prompt_fn(title, context)
             try:
-                body = (await self._llm_call(prompt, max_tokens=1500)).strip()
+                body = (await self._llm_call(prompt, max_tokens=1000)).strip()
             except Exception as exc:
                 logger.warning("section %r failed: %s", title, exc)
                 yield AgentEvent(
@@ -396,6 +417,11 @@ class Orchestrator:
                     detail=str(exc),
                 )
                 body = f"_(generation failed: {exc})_"
+
+            # Guard: never let a failed-generation marker or a raw rate-limit
+            # error leak into the guide as content. Swap in a friendly message.
+            if body.startswith("_(generation failed") or "rate_limit_exceeded" in body:
+                body = _SECTION_UNAVAILABLE_MESSAGE
 
             # Some models will themselves prefix the title; strip a leading H2
             # so we don't double up when we add ours.
@@ -686,7 +712,16 @@ class Orchestrator:
         ]
         prompt_parts.extend(live_sections)
         prompt = "\n\n".join(prompt_parts)
-        return (await self._llm_call(prompt, max_tokens=1000)).strip()
+        try:
+            answer = (await self._llm_call(prompt, max_tokens=1000)).strip()
+        except Exception as exc:
+            logger.warning("ask() LLM call failed: %s", exc)
+            return _ASK_UNAVAILABLE_MESSAGE
+        # _llm_call returns a fallback marker (rather than raising) when it
+        # exhausts retries on a rate limit; translate it for the Q&A context.
+        if not answer or answer == _RATE_LIMIT_SECTION_FALLBACK or "rate_limit_exceeded" in answer:
+            return _ASK_UNAVAILABLE_MESSAGE
+        return answer
 
     async def _draft_live_spl(self, question: str) -> str:
         """Ask the LLM for an SPL query that answers ``question``.
