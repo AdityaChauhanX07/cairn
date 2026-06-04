@@ -34,11 +34,10 @@ export default function ConnectForm({ onConnected }: Props) {
   return (
     <>
       <div className="connect-logo">
-        <span className="logo-emoji">🪨</span>
-        <span className="logo-text">Cairn</span>
+        <span className="brand">cairn</span>
       </div>
       <p className="connect-tagline">
-        Point Cairn at a Splunk instance and it'll explore it for you.
+        Point it at a Splunk instance. It maps the place and writes the guide.
       </p>
 
       <div className="connect-container">

@@ -3,12 +3,8 @@ import { askQuestion } from '../utils/api';
 import { markdownToHtml } from '../utils/markdown';
 import type { ChatMessage } from '../types';
 
-const SUGGESTED_QUESTIONS = [
-  "This alert 'Critical: Multiple Failed Logins from Same IP' paged me at 3am. What does it mean and what should I do?",
-  'Which indexes hold authentication data?',
-  'What does the high_severity_filter macro do?',
-  'Who owns the most alerts?',
-];
+const SUGGESTED_QUESTION =
+  "What does 'Critical: Multiple Failed Logins from Same IP' mean and what should I do when it fires?";
 
 export default function ChatView() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -46,31 +42,8 @@ export default function ChatView() {
     }
   }
 
-  function useSuggested(q: string) {
-    setInput(q);
-    inputRef.current?.focus();
-  }
-
   return (
     <div className="chat-container">
-      <div className="chat-header">
-        <h2 className="chat-title">Ask a Question</h2>
-        <p className="chat-subtitle">Ask about your Splunk environment, alerts, or anything in the guide.</p>
-      </div>
-
-      {messages.length === 0 && !loading && (
-        <div className="chat-suggestion">
-          <span className="suggestion-label">Try asking</span>
-          <div className="suggestion-pills">
-            {SUGGESTED_QUESTIONS.map((q, i) => (
-              <button key={i} className="suggestion-btn" onClick={() => useSuggested(q)}>
-                {q}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {messages.length > 0 && (
         <div className="chat-messages">
           {messages.map((msg, i) => (
@@ -78,11 +51,8 @@ export default function ChatView() {
           ))}
           {loading && (
             <div className="chat-bubble assistant">
-              <div className="bubble-role">Cairn</div>
               <div className="bubble-body loading-dots">
-                <span />
-                <span />
-                <span />
+                <span /><span /><span />
               </div>
             </div>
           )}
@@ -90,7 +60,20 @@ export default function ChatView() {
         </div>
       )}
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && (
+        <div className="error-banner" style={{ marginBottom: 16 }}>
+          <span className="error-mark">!</span>
+          <span><span className="error-hint">{error}</span></span>
+        </div>
+      )}
+
+      {messages.length === 0 && !loading && (
+        <div className="chat-suggested">
+          <button className="chat-suggested-link" onClick={() => send(SUGGESTED_QUESTION)}>
+            {SUGGESTED_QUESTION}
+          </button>
+        </div>
+      )}
 
       <div className="chat-input-row">
         <textarea
@@ -99,16 +82,17 @@ export default function ChatView() {
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask about your Splunk environment... (Enter to send, Shift+Enter for newline)"
-          rows={3}
+          placeholder="Ask…"
+          rows={2}
           disabled={loading}
         />
         <button
           className="btn btn-primary chat-send-btn"
           onClick={() => send(input)}
           disabled={loading || !input.trim()}
+          aria-label="Ask"
         >
-          {loading ? <span className="spinner" /> : 'Send'}
+          {loading ? <span className="spinner" /> : '→'}
         </button>
       </div>
     </div>
@@ -119,7 +103,6 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   return (
     <div className={`chat-bubble ${isUser ? 'user' : 'assistant'}`}>
-      <div className="bubble-role">{isUser ? 'You' : 'Cairn'}</div>
       {isUser ? (
         <div className="bubble-body">{message.content}</div>
       ) : (

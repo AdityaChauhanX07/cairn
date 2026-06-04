@@ -16,31 +16,31 @@ interface SnapNode {
   properties?: Record<string, unknown>;
 }
 
-// Per-section presentation: icon + a summary builder driven by graph counts.
-// Keyed by the backend's section titles; unknown titles fall back to a default.
-const SECTION_META: Record<string, { icon: string; summary: (c: Counts) => string }> = {
+// Per-section presentation: a left accent color (by object type) + a summary
+// built from graph counts. Keyed by the backend's titles; unknown -> default.
+const SECTION_META: Record<string, { accent: string; summary: (c: Counts) => string }> = {
   'Critical Alerts & What They Mean': {
-    icon: '🚨',
+    accent: 'var(--type-alert)',
     summary: (c) =>
       c.alert === 0
-        ? 'No alerts found'
+        ? 'no alerts found'
         : `${c.alert} alert${c.alert !== 1 ? 's' : ''}${c.critical ? `, ${c.critical} critical` : ''}`,
   },
   'Your Data Landscape': {
-    icon: '🗂️',
-    summary: (c) => `${c.index} index${c.index !== 1 ? 'es' : ''} discovered`,
+    accent: 'var(--type-index)',
+    summary: (c) => `${c.index} index${c.index !== 1 ? 'es' : ''}`,
   },
   "Your Team's Dashboards": {
-    icon: '📊',
+    accent: 'var(--type-dashboard)',
     summary: (c) => `${c.dashboard} dashboard${c.dashboard !== 1 ? 's' : ''}`,
   },
   'The Shorthand': {
-    icon: '🔤',
+    accent: 'var(--type-macro)',
     summary: (c) => `${c.macro} macro${c.macro !== 1 ? 's' : ''}, ${c.lookup} lookup${c.lookup !== 1 ? 's' : ''}`,
   },
   'Who Knows What': {
-    icon: '👤',
-    summary: (c) => (c.owners ? `${c.owners} owner${c.owners !== 1 ? 's' : ''}` : 'Ownership signals'),
+    accent: 'var(--type-saved-search)',
+    summary: (c) => (c.owners ? `${c.owners} owner${c.owners !== 1 ? 's' : ''}` : 'ownership signals'),
   },
 };
 
@@ -154,12 +154,17 @@ export default function GuideView({ onStartChat, onReExplore, showChat }: Props)
   }
 
   const envLine = envSummaryLine(env);
+  // The guide IS the page — title it with the environment, e.g. "MSI — Splunk 10.4.0".
+  const guideTitle = (() => {
+    const lead = env?.product || env?.os;
+    const ver = env?.version ? `Splunk ${env.version}` : 'Splunk environment';
+    return lead ? `${lead} — ${ver}` : ver;
+  })();
 
   return (
     <div className="guide-container">
       <header className="app-header">
-        <span className="logo-emoji">🪨</span>
-        <span className="logo-text">Cairn</span>
+        <span className="brand">cairn</span>
         {(envLine || counts) && (
           <span className="header-env">
             <span className="env-dot" />
@@ -173,7 +178,7 @@ export default function GuideView({ onStartChat, onReExplore, showChat }: Props)
             Re-explore
           </button>
           <button className="btn btn-primary btn-sm" onClick={handleExport} disabled={exporting}>
-            {exporting ? 'Exporting…' : 'Export Guide'}
+            {exporting ? 'Exporting…' : 'Export as Markdown'}
           </button>
         </div>
       </header>
@@ -215,12 +220,7 @@ export default function GuideView({ onStartChat, onReExplore, showChat }: Props)
 
           <div className="guide-content">
             <div className="guide-intro">
-              <h1 className="guide-title">Your Splunk Operations Guide</h1>
-              <p className="guide-subtitle">
-                {[envLine || 'Splunk environment', `${counts.total} objects discovered`]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </p>
+              <h1 className="guide-title">{guideTitle}</h1>
             </div>
 
             <div className="guide-sections">
@@ -262,28 +262,22 @@ const GuideCard = forwardRef<HTMLDivElement, CardProps>(function GuideCard(
   ref
 ) {
   const [open, setOpen] = useState(defaultOpen);
-  const meta = SECTION_META[section.title] ?? { icon: '📄', summary: () => '' };
+  const meta = SECTION_META[section.title] ?? { accent: 'var(--border)', summary: () => '' };
   const summary = meta.summary(counts);
-
-  // Severity accent on the critical-alerts section only.
-  const isAlerts = section.title === 'Critical Alerts & What They Mean';
-  const sevClass = isAlerts
-    ? counts.critical > 0 ? 'sev-critical' : counts.alert > 0 ? 'sev-warning' : ''
-    : '';
 
   return (
     <div
       ref={ref}
       data-index={index}
-      className={`guide-card ${open ? 'open' : ''} ${sevClass}`}
+      className="guide-card"
+      style={{ ['--section-accent' as string]: meta.accent }}
     >
       <button className="guide-card-header" onClick={() => setOpen(o => !o)}>
-        <span className="guide-card-icon">{meta.icon}</span>
         <span className="guide-card-heading">
           <span className="guide-card-title">{section.title}</span>
           {summary && <span className="guide-card-summary">{summary}</span>}
         </span>
-        <span className="guide-card-chevron">▸</span>
+        <span className="guide-card-toggle">{open ? '−' : '+'}</span>
       </button>
       {open && (
         <div

@@ -10,6 +10,12 @@ interface Props {
 
 type StreamPhase = 'idle' | 'exploring' | 'explored' | 'generating' | 'done';
 
+// An event plus the wall-clock time it arrived (the backend doesn't timestamp).
+interface FeedItem {
+  ev: AgentEvent;
+  ts: string;
+}
+
 const PHASE_COLORS: Record<string, string> = {
   orient: 'var(--accent-blue)',
   investigate: 'var(--accent-amber)',
@@ -19,7 +25,6 @@ const PHASE_COLORS: Record<string, string> = {
   error: 'var(--accent-red)',
 };
 
-// Canonical order of the agentic phases for the waypoint stepper.
 const PHASE_INDEX: Record<string, number> = {
   orient: 0,
   investigate: 1,
@@ -34,31 +39,30 @@ const WAYPOINTS = [
   { key: 'synthesize', label: 'Synthesize' },
 ] as const;
 
-// The six counters and how they map onto graph node types.
 const COUNTERS = [
-  { key: 'index', label: 'Indexes', color: 'var(--chip-index)' },
-  { key: 'alert', label: 'Alerts', color: 'var(--chip-alert)' },
-  { key: 'saved_search', label: 'Searches', color: 'var(--chip-saved-search)' },
-  { key: 'macro', label: 'Macros', color: 'var(--chip-macro)' },
-  { key: 'dashboard', label: 'Dashboards', color: 'var(--chip-dashboard)' },
-  { key: 'lookup', label: 'Lookups', color: 'var(--chip-lookup)' },
+  { key: 'index', label: 'Indexes' },
+  { key: 'alert', label: 'Alerts' },
+  { key: 'saved_search', label: 'Searches' },
+  { key: 'macro', label: 'Macros' },
+  { key: 'dashboard', label: 'Dashboards' },
+  { key: 'lookup', label: 'Lookups' },
 ] as const;
 
 type Counts = Record<string, number>;
+
+function nowStamp(): string {
+  return new Date().toLocaleTimeString('en-GB', { hour12: false });
+}
 
 function eventData(ev: AgentEvent): Record<string, unknown> {
   return (ev.data as Record<string, unknown>) ?? {};
 }
 
-// Tick counters up from individual events; the explore "done" summary
-// (nodes_by_type) is authoritative and overrides — it's the only source that
-// splits alerts from saved searches.
 function deriveCounts(events: AgentEvent[]): Counts {
   const c: Counts = { index: 0, alert: 0, saved_search: 0, macro: 0, lookup: 0, dashboard: 0 };
   for (const ev of events) {
     const d = eventData(ev);
     if (Array.isArray(d.indexes)) c.index = d.indexes.length;
-
     if (typeof d.count === 'number') {
       const m = ev.message ?? '';
       if (/macros/.test(m)) c.macro = d.count;
@@ -66,7 +70,6 @@ function deriveCounts(events: AgentEvent[]): Counts {
       else if (/views/.test(m)) c.dashboard = d.count;
       else if (/saved_searches/.test(m)) c.saved_search = d.count;
     }
-
     const summary = d.summary as { nodes_by_type?: Record<string, number> } | undefined;
     const nbt = summary?.nodes_by_type;
     if (nbt) {
@@ -83,9 +86,7 @@ function deriveEnv(events: AgentEvent[]): CairnEnv {
   for (const ev of events) {
     const d = eventData(ev);
     const info = d.info as Record<string, unknown> | undefined;
-    if (info && typeof info === 'object') {
-      env = { ...env, ...parseDeploymentInfo(info) };
-    }
+    if (info && typeof info === 'object') env = { ...env, ...parseDeploymentInfo(info) };
     const summary = d.summary as { nodes_by_type?: Record<string, number>; node_total?: number } | undefined;
     if (summary?.nodes_by_type) {
       env.counts = summary.nodes_by_type;
@@ -111,7 +112,6 @@ function waypointStatus(idx: number, stream: StreamPhase, maxSeen: number): Wayp
   if (stream === 'done') return 'complete';
   if (stream === 'explored') return idx <= 2 ? 'complete' : 'pending';
   if (stream === 'generating') return idx <= 2 ? 'complete' : 'active';
-  // idle / exploring — monotonic by canonical phase order
   if (idx < maxSeen) return 'complete';
   if (idx === maxSeen) return 'active';
   return 'pending';
@@ -119,27 +119,27 @@ function waypointStatus(idx: number, stream: StreamPhase, maxSeen: number): Wayp
 
 export default function ExploreView({ onGuideReady }: Props) {
   const [phase, setPhase] = useState<StreamPhase>('idle');
-  const [events, setEvents] = useState<AgentEvent[]>([]);
-  const [genEvents, setGenEvents] = useState<AgentEvent[]>([]);
+  const [events, setEvents] = useState<FeedItem[]>([]);
+  const [genEvents, setGenEvents] = useState<FeedItem[]>([]);
   const [error, setError] = useState('');
   const feedRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<(() => void) | null>(null);
 
-  const allEvents = useMemo(() => [...events, ...genEvents], [events, genEvents]);
+  const allEvents = useMemo(
+    () => [...events, ...genEvents].map(f => f.ev),
+    [events, genEvents]
+  );
   const counts = useMemo(() => deriveCounts(allEvents), [allEvents]);
   const env = useMemo(() => deriveEnv(allEvents), [allEvents]);
   const maxSeen = useMemo(() => maxPhaseSeen(allEvents), [allEvents]);
   const envLine = envSummaryLine(env);
 
-  // Persist environment identity for the guide screen once we know it.
   useEffect(() => {
     if (env.version || env.total) saveEnv(env);
   }, [env]);
 
   useEffect(() => {
-    if (feedRef.current) {
-      feedRef.current.scrollTop = feedRef.current.scrollHeight;
-    }
+    if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
   }, [events, genEvents]);
 
   function startExplore() {
@@ -147,7 +147,7 @@ export default function ExploreView({ onGuideReady }: Props) {
     setEvents([]);
     setPhase('exploring');
     cancelRef.current = exploreSSE(
-      (ev) => setEvents(prev => [...prev, ev]),
+      (ev) => setEvents(prev => [...prev, { ev, ts: nowStamp() }]),
       () => setPhase('explored'),
       (err) => { setError(err); setPhase('idle'); }
     );
@@ -158,7 +158,7 @@ export default function ExploreView({ onGuideReady }: Props) {
     setGenEvents([]);
     setPhase('generating');
     cancelRef.current = generateSSE(
-      (ev) => setGenEvents(prev => [...prev, ev]),
+      (ev) => setGenEvents(prev => [...prev, { ev, ts: nowStamp() }]),
       () => { setPhase('done'); onGuideReady(); },
       (err) => { setError(err); setPhase('explored'); }
     );
@@ -172,25 +172,20 @@ export default function ExploreView({ onGuideReady }: Props) {
   return (
     <div className="explore-container">
       <header className="app-header">
-        <span className="logo-emoji">🪨</span>
-        <span className="logo-text">Cairn</span>
-        {envLine ? (
+        <span className="brand">cairn</span>
+        {envLine && (
           <span className="header-env"><span className="env-dot" />{envLine}</span>
-        ) : (
-          <span className="header-tagline">Exploring your Splunk environment…</span>
         )}
       </header>
 
       {phase === 'idle' && (
         <div className="explore-start">
           <p className="explore-description">
-            Cairn will connect to your Splunk instance, discover saved searches,
-            alerts, and dashboards, reason about what matters, then generate a
-            tailored operations guide.
+            Cairn connects to your Splunk instance, traces how saved searches,
+            alerts, macros and lookups depend on each other, reasons about what
+            matters, and writes the guide you wish the last on-call had left you.
           </p>
-          <button className="btn btn-primary" onClick={startExplore}>
-            Start Exploration
-          </button>
+          <button className="btn btn-primary" onClick={startExplore}>Explore</button>
         </div>
       )}
 
@@ -199,27 +194,22 @@ export default function ExploreView({ onGuideReady }: Props) {
           {/* Left — live agent feed */}
           <div className="feed-wrapper">
             <div className="feed-header">
-              <span className="feed-title">Agent Log</span>
-              {live && (
-                <span className="feed-status"><span className="pulse-dot" />Live</span>
-              )}
+              <span className="feed-title">Agent log</span>
+              {live && <span className="feed-status"><span className="pulse-dot" />live</span>}
             </div>
             <div className="feed" ref={feedRef}>
               {phase === 'exploring' && events.length === 0 && (
-                <div className="feed-row">
-                  <span className="phase-badge"><span className="phase-dot" />connect</span>
-                  <span className="feed-message">Connecting to Splunk and starting exploration…</span>
-                </div>
+                <div className="feed-empty"><span className="pulse-dot" />awaiting first signal</div>
               )}
-              {events.map((ev, i) => <EventRow key={i} event={ev} />)}
-              {genEvents.map((ev, i) => <EventRow key={`gen-${i}`} event={ev} />)}
+              {events.map((f, i) => <EventRow key={i} item={f} />)}
+              {genEvents.map((f, i) => <EventRow key={`gen-${i}`} item={f} />)}
             </div>
           </div>
 
-          {/* Right — live discovery dashboard */}
+          {/* Right — discovery dashboard */}
           <aside className="discovery-panel">
-            <div className="dash-card env-card">
-              <div className="dash-card-label">Environment</div>
+            <div>
+              <div className="dash-block-label">Environment</div>
               {envLine ? (
                 <>
                   <div className="env-title">{env.version ? `Splunk ${env.version}` : 'Splunk'}</div>
@@ -228,45 +218,38 @@ export default function ExploreView({ onGuideReady }: Props) {
                   </div>
                 </>
               ) : (
-                <div className="env-sub env-waiting">Detecting deployment…</div>
+                <div className="env-sub env-waiting">detecting deployment</div>
               )}
             </div>
 
-            <div className="dash-card">
-              <div className="dash-card-label">Objects Discovered</div>
+            <div>
+              <div className="dash-block-label">Objects discovered</div>
               <div className="counter-grid">
                 {COUNTERS.map(c => {
                   const value = counts[c.key] ?? 0;
                   return (
                     <div className="counter" key={c.key}>
-                      <span className="counter-name" style={{ ['--counter-color' as string]: c.color }}>
-                        {c.label}
-                      </span>
-                      {/* key={value} remounts the node so the pop animation replays on change */}
-                      <span
-                        key={value}
-                        className={`counter-value ${value > 0 ? 'bumped' : 'is-zero'}`}
-                      >
+                      {/* key={value} remounts on change, replaying the amber flash */}
+                      <span key={value} className={`counter-value ${value > 0 ? 'flash' : 'is-zero'}`}>
                         {value}
                       </span>
+                      <span className="counter-label">{c.label}</span>
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            <div className="dash-card">
-              <div className="dash-card-label">Agentic Loop</div>
+            <div>
+              <div className="dash-block-label">Agentic loop</div>
               <div className="waypoints">
                 {WAYPOINTS.map((wp, idx) => {
                   const status = waypointStatus(idx, phase, maxSeen);
                   return (
                     <div className={`waypoint ${status} ${wp.key}`} key={wp.key}>
-                      <span className="waypoint-marker">{status === 'complete' ? '✓' : ''}</span>
+                      <span className="waypoint-marker" />
                       <span className="waypoint-label">{wp.label}</span>
-                      <span className="waypoint-status">
-                        {status === 'complete' ? 'complete' : status === 'active' ? 'active' : 'pending'}
-                      </span>
+                      <span className="waypoint-status">{status}</span>
                     </div>
                   );
                 })}
@@ -274,30 +257,23 @@ export default function ExploreView({ onGuideReady }: Props) {
             </div>
 
             {phase === 'explored' && (
-              <div className="dash-card dash-action">
-                <button className="btn btn-primary btn-full" onClick={startGenerate}>
-                  Generate Guide
-                </button>
+              <div className="dash-action">
+                <button className="btn btn-primary btn-full" onClick={startGenerate}>Build guide</button>
               </div>
             )}
             {phase === 'generating' && (
-              <div className="dash-card">
-                <div className="generating-status">
-                  <span className="spinner" />
-                  Writing guide sections…
-                </div>
-              </div>
+              <div className="dash-action"><div className="progress-rail" /></div>
             )}
           </aside>
         </div>
       )}
 
       {error && (
-        <div className="explore-action">
+        <div style={{ padding: '16px 24px' }}>
           <div className="error-banner">
-            <span className="error-icon">⚠</span>
+            <span className="error-mark">!</span>
             <span>
-              <span className="error-title">Exploration hit a snag</span>
+              <span className="error-title">Exploration stalled</span>
               <span className="error-hint">{error}</span>
             </span>
           </div>
@@ -307,42 +283,38 @@ export default function ExploreView({ onGuideReady }: Props) {
   );
 }
 
-function EventRow({ event }: { event: AgentEvent }) {
-  const data = (event.data as Record<string, unknown>) ?? {};
+function EventRow({ item }: { item: FeedItem }) {
+  const { ev, ts } = item;
+  const data = (ev.data as Record<string, unknown>) ?? {};
   const observation = typeof data.observation === 'string' ? data.observation : '';
 
-  // The agent's analysis — the "it's actually thinking" moment. Only the event
-  // that carries an observation becomes the prominent violet card; the kickoff
-  // "asking the LLM…" reason line stays in the terminal feed below.
-  if (event.phase === 'reason' && observation) {
+  if (ev.phase === 'reason' && observation) {
     return (
       <div className="event-reasoning">
-        <div className="event-header">🧠 Agent Reasoning</div>
+        <div className="event-header">agent reasoning</div>
         <div className="event-body">{observation}</div>
       </div>
     );
   }
 
-  if (event.phase === 'done') {
+  if (ev.phase === 'done') {
     return (
       <div className="event-done">
-        <div className="event-header">✓ {event.message}</div>
-        {event.detail && <div className="event-body">{event.detail}</div>}
+        <div className="event-header">{ev.message}</div>
+        {ev.detail && <div className="event-body">{ev.detail}</div>}
       </div>
     );
   }
 
-  // Everything else — compact monospace terminal line.
-  const color = PHASE_COLORS[event.phase] ?? 'var(--text-muted)';
-
+  const color = PHASE_COLORS[ev.phase] ?? 'var(--text-muted)';
   return (
     <div className="feed-row">
+      <span className="feed-time">{ts}</span>
       <span className="phase-badge" style={{ '--phase-color': color } as React.CSSProperties}>
-        <span className="phase-dot" />
-        {event.phase}
+        <span className="phase-dot" />{ev.phase}
       </span>
-      <span className="feed-message">{event.message}</span>
-      {event.detail && <span className="feed-detail">{event.detail}</span>}
+      <span className="feed-message">{ev.message}</span>
+      {ev.detail && <span className="feed-detail">{ev.detail}</span>}
     </div>
   );
 }
