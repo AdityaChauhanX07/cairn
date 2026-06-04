@@ -60,36 +60,40 @@ export default function ChatView({ onChipClick }: Props) {
 
   return (
     <div className="chat-container">
-      {messages.length > 0 && (
-        <div className="chat-messages">
-          {messages.map((msg, i) => (
-            <ChatBubble key={i} message={msg} onChipClick={onChipClick} />
-          ))}
-          {loading && (
-            <div className="chat-bubble assistant">
-              <div className="bubble-body loading-dots">
-                <span /><span /><span />
+      <div className="chat-scroll">
+        {messages.length === 0 && !loading && (
+          <div className="chat-suggested">
+            <span className="chat-suggested-label">Try asking</span>
+            <button className="chat-suggested-link" onClick={() => send(SUGGESTED_QUESTION)}>
+              {SUGGESTED_QUESTION}
+            </button>
+          </div>
+        )}
+
+        {messages.length > 0 && (
+          <div className="chat-messages">
+            {messages.map((msg, i) => (
+              <ChatBubble key={i} message={msg} onChipClick={onChipClick} />
+            ))}
+            {loading && (
+              <div className="chat-bubble assistant">
+                <div className="bubble-body loading-dots">
+                  <span /><span /><span />
+                </div>
               </div>
-            </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
-      )}
+            )}
+          </div>
+        )}
 
-      {error && (
-        <div className="error-banner" style={{ marginBottom: 16 }}>
-          <span className="error-mark">!</span>
-          <span><span className="error-hint">{error}</span></span>
-        </div>
-      )}
+        {error && (
+          <div className="error-banner" style={{ marginTop: 16 }}>
+            <span className="error-mark">!</span>
+            <span><span className="error-hint">{error}</span></span>
+          </div>
+        )}
 
-      {messages.length === 0 && !loading && (
-        <div className="chat-suggested">
-          <button className="chat-suggested-link" onClick={() => send(SUGGESTED_QUESTION)}>
-            {SUGGESTED_QUESTION}
-          </button>
-        </div>
-      )}
+        <div ref={bottomRef} />
+      </div>
 
       <div className="chat-input-row">
         <textarea

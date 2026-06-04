@@ -3,12 +3,11 @@ import { getGuide, exportGuide } from '../utils/api';
 import { markdownToHtml } from '../utils/markdown';
 import { loadEnv, envSummaryLine } from '../utils/env';
 import RelationshipGraph from './RelationshipGraph';
+import ChatView from './ChatView';
 import type { Guide, GuideSection, GraphNode, GraphEdge } from '../types';
 
 interface Props {
-  onStartChat: () => void;
   onReExplore: () => void;
-  showChat: boolean;
   onChipClick?: (term: string) => void;
 }
 
@@ -126,11 +125,13 @@ function deriveGuideGraph(guide: Guide): { nodes: GraphNode[]; edges: GraphEdge[
   return { nodes, edges };
 }
 
-export default function GuideView({ onStartChat, onReExplore, showChat, onChipClick }: Props) {
+export default function GuideView({ onReExplore, onChipClick }: Props) {
   const [guide, setGuide] = useState<Guide | null>(null);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  // Narrow-screen overlay: the Q&A panel is docked on wide screens, a drawer below.
+  const [chatOpen, setChatOpen] = useState(false);
   // Sections collapse on demand; a card is open unless its index is in this set.
   const [closedSections, setClosedSections] = useState<Set<number>>(new Set());
   // Node lit up by a chip click — fed to the graph so it highlights that chain.
@@ -178,6 +179,9 @@ export default function GuideView({ onStartChat, onReExplore, showChat, onChipCl
     function focusTerm(term: string) {
       const t = term.trim().toLowerCase();
       if (!t) return;
+      // On narrow screens the chat is an overlay — close it so the scroll /
+      // highlight it triggers is actually visible behind it.
+      setChatOpen(false);
 
       // Graph: prefer an exact name match, else a node whose name is embedded in
       // the term (handles "index=auth_events" pointing at the "auth_events" node).
@@ -342,15 +346,29 @@ export default function GuideView({ onStartChat, onReExplore, showChat, onChipCl
                 />
               ))}
             </div>
-
-            {!showChat && (
-              <div className="explore-action" style={{ padding: '32px 0 0' }}>
-                <button className="btn btn-primary" onClick={onStartChat}>
-                  Ask a Question
-                </button>
-              </div>
-            )}
           </div>
+
+          <aside className={`guide-chat ${chatOpen ? 'open' : ''}`}>
+            <div className="guide-chat-header">
+              <span>Ask cairn</span>
+              <button
+                className="guide-chat-close"
+                onClick={() => setChatOpen(false)}
+                aria-label="Close chat"
+              >
+                ×
+              </button>
+            </div>
+            <ChatView onChipClick={onChipClick} />
+          </aside>
+
+          <button
+            className={`chat-fab ${chatOpen ? 'hidden' : ''}`}
+            onClick={() => setChatOpen(true)}
+            aria-label="Open chat"
+          >
+            Ask cairn
+          </button>
         </div>
       )}
     </div>
