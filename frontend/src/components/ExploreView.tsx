@@ -141,6 +141,29 @@ export default function ExploreView({ onGuideReady }: Props) {
 }
 
 function EventRow({ event }: { event: AgentEvent }) {
+  // The reasoning step is the "agent is thinking" moment — surface it as a
+  // prominent card rather than another terminal log line.
+  if (event.phase === 'reason') {
+    const body = [event.message, event.detail].filter(Boolean).join('\n\n');
+    return (
+      <div className="event-reasoning">
+        <div className="event-header">🧠 Agent Reasoning</div>
+        <div className="event-body">{body}</div>
+      </div>
+    );
+  }
+
+  // Completion gets its own green card so the end of a run reads as a result.
+  if (event.phase === 'done') {
+    return (
+      <div className="event-done">
+        <div className="event-header">✓ {event.message}</div>
+        {event.detail && <div className="event-body">{event.detail}</div>}
+      </div>
+    );
+  }
+
+  // Everything else stays compact + monospace — a terminal-style crawl feed.
   const color = PHASE_COLORS[event.phase] ?? 'var(--text-muted)';
   const label = PHASE_LABELS[event.phase] ?? event.phase;
 

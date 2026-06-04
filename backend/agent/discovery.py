@@ -342,11 +342,17 @@ class DiscoveryEngine:
         *,
         parser: SPLParser | None = None,
         llm_call: LLMCall | None = None,
+        explain_spl_call: LLMCall | None = None,
     ) -> None:
         self._client = client
         self._graph = graph
         self._parser = parser or SPLParser()
         self._llm_call = llm_call
+        # Coroutine (spl: str) -> str that explains an SPL string. The
+        # orchestrator passes one that tries the saia_explain_spl MCP tool
+        # first and falls back to the LLM. When absent we use ``llm_call``
+        # directly (legacy / test construction).
+        self._explain_spl_call = explain_spl_call
 
     # ---- orient ----
 
@@ -753,19 +759,21 @@ class DiscoveryEngine:
         max_explanations: int = 5,
         max_tokens: int = 500,
     ) -> AsyncIterator[Finding]:
-        """Ask the LLM to plain-English each user-facing SPL string.
+        """Plain-English each user-facing SPL string.
 
-        Default scope is alerts only — they're the artifacts a 3am-paged
-        engineer most needs to understand, and limiting the set keeps us
-        under the Groq free-tier rate limit. ``max_explanations`` caps
-        total LLM calls regardless of node count.
+        Explanation prefers the native ``saia_explain_spl`` MCP tool (via the
+        orchestrator's ``explain_spl_call``) and falls back to the LLM. Default
+        scope is alerts only — they're the artifacts a 3am-paged engineer most
+        needs to understand, and limiting the set keeps us under the Groq
+        free-tier rate limit. ``max_explanations`` caps total explanation calls
+        regardless of node count.
 
-        Skips silently if no ``llm_call`` was passed to the engine.
+        Skips silently if no explanation hook was passed to the engine.
         """
-        if self._llm_call is None:
+        if self._explain_spl_call is None and self._llm_call is None:
             yield Finding(
                 kind="explanations",
-                message="no LLM hook configured — skipping SPL explanations",
+                message="no explanation hook configured — skipping SPL explanations",
             )
             return
 
@@ -801,9 +809,12 @@ class DiscoveryEngine:
         for node in targets:
             spl = node.properties["spl"]
             try:
-                explanation = await self._llm_call(
-                    prompt_template.format(spl=spl), max_tokens
-                )
+                if self._explain_spl_call is not None:
+                    explanation = await self._explain_spl_call(spl, max_tokens)
+                else:
+                    explanation = await self._llm_call(
+                        prompt_template.format(spl=spl), max_tokens
+                    )
             except Exception as exc:
                 yield Finding(
                     kind="error",

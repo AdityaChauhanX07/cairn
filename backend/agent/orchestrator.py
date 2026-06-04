@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
@@ -149,6 +150,7 @@ class Orchestrator:
             self._graph,
             parser=SPLParser(),
             llm_call=self._llm_call,
+            explain_spl_call=self._explain_spl_with_fallback,
         )
         self._guide: OnboardingGuide | None = None
         self._lock = asyncio.Lock()
@@ -201,6 +203,36 @@ class Orchestrator:
                 logger.warning("Groq call failed (attempt %d): %s — retrying", attempt + 1, exc)
                 await asyncio.sleep(1.0)
         raise RuntimeError(f"Groq call exhausted retries: {last_exc}")
+
+    # ---- SPL explanation (MCP-first, LLM fallback) ----
+
+    async def _explain_spl_with_fallback(self, spl: str, max_tokens: int = 500) -> str:
+        """Explain an SPL string, preferring the native ``saia_explain_spl`` tool.
+
+        We try Splunk's AI Assistant for SPL first — it understands this
+        deployment's own macros, lookups and indexes — and fall back to Groq
+        only when the tool is unavailable on this instance or errors out. The
+        LLM fallback is always present, so explanation never hard-fails.
+        """
+        if self._mcp.has_saia():
+            try:
+                explanation = (await self._mcp.explain_spl(spl)).strip()
+                if explanation and "error" not in explanation.lower():
+                    return explanation
+                logger.warning(
+                    "saia_explain_spl returned an empty/error result, falling back to LLM"
+                )
+            except Exception as exc:  # noqa: BLE001 - any failure routes to the LLM
+                logger.warning("saia_explain_spl unavailable, falling back to LLM: %s", exc)
+
+        return await self._llm_call(
+            "Explain the following SPL query in plain English for a Splunk "
+            "newcomer being onboarded onto this deployment. Identify what it "
+            "searches, what fields it filters/aggregates, and what macros / "
+            "lookups / indexes it depends on. Be concise — 3 short paragraphs "
+            f"max.\n\nSPL:\n```\n{spl}\n```",
+            max_tokens,
+        )
 
     # ---- The main exploration flow ----
 
@@ -278,10 +310,11 @@ class Orchestrator:
         async for finding in self._discovery.gather_usage():
             yield _finding_to_event(AgentPhase.INVESTIGATE, finding)
 
-        # ---- Explain SPL for alerts (~3 LLM calls) ----
+        # ---- Explain SPL for alerts (saia_explain_spl first, LLM fallback) ----
         yield AgentEvent(
             phase=AgentPhase.INVESTIGATE,
-            message="explaining alert SPL via the LLM",
+            message="explaining alert SPL"
+            + (" via saia_explain_spl" if self._mcp.has_saia() else " via the LLM"),
         )
         async for finding in self._discovery.explain_user_facing_spls(
             node_types=(NodeType.ALERT,),
@@ -367,6 +400,15 @@ class Orchestrator:
             # Some models will themselves prefix the title; strip a leading H2
             # so we don't double up when we add ours.
             body_stripped = _strip_leading_h2(body, title)
+
+            # Append visual dependency trees to the alerts section. Done before
+            # both stores below so the frontend section and the markdown export
+            # pick them up from the same source.
+            if title == _ALERTS_SECTION_TITLE:
+                trees = self._render_alert_chain_trees()
+                if trees:
+                    body_stripped = f"{body_stripped}\n\n{trees}"
+
             sections[title] = body_stripped
             markdown_chunks.append(f"## {title}\n\n{body_stripped}\n")
             yield AgentEvent(
@@ -475,6 +517,10 @@ class Orchestrator:
                     "owner": alert.properties.get("owner"),
                     "alert_severity": alert.properties.get("alert_severity"),
                     "usage_count_24h": alert.properties.get("usage_count_24h"),
+                    # An ASCII tree of this alert's dependency chain. Included in
+                    # the LLM context so it can reference the structure, and
+                    # re-rendered verbatim into the guide section / export below.
+                    "chain_tree": self._render_chain_tree(alert.id),
                     "paths": [
                         [{"type": n.type.value, "name": n.name} for n in p]
                         for p in paths
@@ -482,6 +528,60 @@ class Orchestrator:
                 }
             )
         return chains
+
+    # ---- Dependency-chain rendering ----
+
+    def _render_chain_tree(
+        self,
+        node_id: str,
+        *,
+        indent: int = 0,
+        visited: frozenset[str] = frozenset(),
+    ) -> str:
+        """Render a node's dependency chain as an indented text tree.
+
+        Walks the outgoing reference edges (alert → saved search → macro →
+        lookup → index), skipping ownership / app-placement edges that aren't
+        part of the dependency story. ``visited`` breaks cycles — the graph is
+        not guaranteed acyclic.
+        """
+        node = self._graph.get_node(node_id)
+        if node is None:
+            return ""
+
+        prefix = "  " * indent
+        arrow = "→ " if indent > 0 else ""
+        lines = [f"{prefix}{arrow}{node.type.value}: {node.name}"]
+
+        visited = visited | {node_id}
+        for edge in self._graph.out_edges(node_id):
+            if edge.type in _CHAIN_SKIP_EDGES:
+                continue
+            if edge.target in visited:
+                continue  # cycle — stop descending
+            subtree = self._render_chain_tree(
+                edge.target, indent=indent + 1, visited=visited
+            )
+            if subtree:
+                lines.append(subtree)
+        return "\n".join(lines)
+
+    def _render_alert_chain_trees(self) -> str:
+        """A Markdown block of every alert's dependency tree, fenced as code.
+
+        Returns an empty string when no alert has any dependencies worth
+        showing, so callers can skip appending an empty section.
+        """
+        blocks: list[str] = []
+        for alert in self._graph.nodes_by_type(NodeType.ALERT):
+            tree = self._render_chain_tree(alert.id)
+            # A lone root line (no descendants) isn't a "chain" — skip it.
+            if "\n" not in tree:
+                continue
+            blocks.append(f"**Dependency Chain:**\n\n```\n{tree}\n```")
+        if not blocks:
+            return ""
+        return "### Dependency Chains\n\n" + "\n\n".join(blocks)
 
     def _collect_ownership_signals(self) -> list[dict[str, Any]]:
         signals: list[dict[str, Any]] = []
@@ -522,6 +622,24 @@ class Orchestrator:
         Any MCP failure along the way falls back silently to context-only —
         we still return *some* answer rather than 500-ing on the user.
         """
+        # ---- conceptual Splunk-domain question → saia_ask_splunk_question ----
+        # General "what is SPL / how does this command work" questions are best
+        # answered by Splunk's own AI Assistant. Try it first; any failure (or
+        # an unavailable tool) drops through to the graph-grounded LLM flow.
+        if _is_conceptual_splunk_question(question) and self._mcp.has_saia():
+            try:
+                answer = (await self._mcp.ask_splunk_question(question)).strip()
+                if answer and "error" not in answer.lower():
+                    return answer
+                logger.warning(
+                    "saia_ask_splunk_question returned an empty/error result, "
+                    "falling back to LLM"
+                )
+            except Exception as exc:  # noqa: BLE001 - any failure routes to the LLM
+                logger.warning(
+                    "saia_ask_splunk_question unavailable, falling back to LLM: %s", exc
+                )
+
         snapshot = self._graph.to_dict()
         live_sections: list[str] = []
 
@@ -627,6 +745,9 @@ def _prompt_critical_alerts(title: str, ctx: dict[str, Any]) -> str:
         "sentences: what triggers it, what data feeds it, and what the on-call "
         "engineer should do when it fires at 3am. Use the spl_explanation "
         "field if present — it's already a plain-English summary of the SPL. "
+        "Each alert has a 'chain_tree' showing its dependency structure; you "
+        "may reference it in prose, but do NOT reproduce the trees yourself — "
+        "they are appended to this section automatically. "
         "Write in a warm, direct style. Output only Markdown body — do NOT "
         "include the H2 header, the orchestrator adds that.\n\n"
         f"ALERTS:\n{json.dumps(ctx, indent=2)[:6000]}"
@@ -679,9 +800,20 @@ def _prompt_ownership(title: str, ctx: dict[str, Any]) -> str:
     )
 
 
+# Title of the alerts section — referenced both in the section table and in
+# the synthesis loop (which appends dependency trees to this section only).
+_ALERTS_SECTION_TITLE = "Critical Alerts & What They Mean"
+
+# Edge types that describe metadata (ownership / app placement) rather than a
+# data-dependency, so they're omitted from the dependency-chain tree view.
+_CHAIN_SKIP_EDGES: frozenset[EdgeType] = frozenset(
+    {EdgeType.LIVES_IN_APP, EdgeType.OWNED_BY}
+)
+
+
 # (section_title, context_builder, prompt_builder)
 _GUIDE_SECTIONS: tuple[tuple[str, Any, Any], ...] = (
-    ("Critical Alerts & What They Mean", Orchestrator._ctx_critical_alerts, _prompt_critical_alerts),
+    (_ALERTS_SECTION_TITLE, Orchestrator._ctx_critical_alerts, _prompt_critical_alerts),
     ("Your Data Landscape", Orchestrator._ctx_data_landscape, _prompt_data_landscape),
     ("Your Team's Dashboards", Orchestrator._ctx_dashboards, _prompt_dashboards),
     ("The Shorthand", Orchestrator._ctx_shorthand, _prompt_shorthand),
@@ -734,6 +866,36 @@ _LIVE_DATA_KEYWORDS: tuple[str, ...] = (
 def _wants_live_data(question: str) -> bool:
     lower = question.lower()
     return any(kw in lower for kw in _LIVE_DATA_KEYWORDS)
+
+
+# A conceptual *Splunk-domain* question (what SPL means, how a command works)
+# rather than a question about THIS deployment's artifacts. These are exactly
+# what the saia_ask_splunk_question tool is built to answer, so we route them
+# there first and only fall back to the graph-grounded LLM flow on failure.
+_CONCEPTUAL_PHRASES: tuple[str, ...] = (
+    "what is spl",
+    "what's spl",
+    "how do i",
+    "how do you",
+    "explain the command",
+    "explain the spl",
+    "what does the command",
+    "syntax for",
+)
+
+# "what does <X> mean in splunk", "what does <X> command do", etc.
+_CONCEPTUAL_REGEX = re.compile(
+    r"what\s+(?:does|do|is|are)\b.*\b(?:mean|do|work)\b.*\bsplunk\b"
+    r"|what\s+(?:does|do)\b.*\bcommand\b.*\b(?:do|mean)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_conceptual_splunk_question(question: str) -> bool:
+    lower = question.lower()
+    if any(phrase in lower for phrase in _CONCEPTUAL_PHRASES):
+        return True
+    return bool(_CONCEPTUAL_REGEX.search(question))
 
 
 def _clean_spl_response(text: str) -> str:

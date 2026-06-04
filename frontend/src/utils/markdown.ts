@@ -8,10 +8,25 @@ export function markdownToHtml(md: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  // Fenced code blocks (``` ... ```)
+  // Fenced code blocks (``` ... ```) — pull them out into placeholders BEFORE
+  // any line-based processing. The paragraph-wrapper below splits on newlines,
+  // so a multi-line <pre> left inline would have its inner lines collapsed into
+  // a paragraph. Stashing the rendered block behind a single-line sentinel
+  // keeps newlines and indentation intact (e.g. the alert dependency trees).
+  const codeBlocks: string[] = [];
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, _lang, code) => {
-    return `<pre><code>${code.trimEnd()}</code></pre>`;
+    const idx = codeBlocks.length;
+    codeBlocks.push(`<pre><code>${code.trimEnd()}</code></pre>`);
+    // Isolated on its own line so the paragraph-wrapper treats it as a block.
+    return `\n\nCAIRNCODEBLOCK${idx}\n\n`;
   });
+
+  // A line is "block-level" (must not be wrapped in <p>) if it's already a
+  // block tag or one of our code-block placeholders. Checked against the
+  // trimmed line, so the placeholder pattern carries no surrounding spaces.
+  const isBlockLine = (t: string): boolean =>
+    /^<(h[1-6]|ul|ol|li|pre|hr|blockquote)/.test(t) ||
+    /^CAIRNCODEBLOCK\d+$/.test(t);
 
   // Inline code
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -57,7 +72,7 @@ export function markdownToHtml(md: string): string {
     if (trimmed === '') {
       result.push('');
       i++;
-    } else if (/^<(h[1-6]|ul|ol|li|pre|hr|blockquote)/.test(trimmed)) {
+    } else if (isBlockLine(trimmed)) {
       result.push(line);
       i++;
     } else {
@@ -66,7 +81,7 @@ export function markdownToHtml(md: string): string {
       while (i < lines.length) {
         const l = lines[i]!;
         const t = l.trim();
-        if (t === '' || /^<(h[1-6]|ul|ol|li|pre|hr|blockquote)/.test(t)) break;
+        if (t === '' || isBlockLine(t)) break;
         para.push(l);
         i++;
       }
@@ -74,5 +89,10 @@ export function markdownToHtml(md: string): string {
     }
   }
 
-  return result.join('\n');
+  html = result.join('\n');
+
+  // Restore code blocks now that line-based processing is done.
+  html = html.replace(/CAIRNCODEBLOCK(\d+)/g, (_m, idx) => codeBlocks[Number(idx)] ?? '');
+
+  return html;
 }

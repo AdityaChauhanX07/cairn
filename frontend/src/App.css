@@ -324,6 +324,47 @@ html, body {
   word-break: break-word;
 }
 
+/* ─── Agent reasoning / done cards (the "thinking" moments) ──────────────── */
+/* These break out of the terminal-feed style so the agent's analysis and the
+   final result stand out from the orient/investigate crawl lines. Horizontal
+   margin matches the feed-row's 16px inset so cards align with the log. */
+.event-reasoning,
+.event-done {
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 8px 16px;
+}
+
+.event-reasoning {
+  background: rgba(139, 92, 246, 0.08);
+  border-left: 3px solid var(--accent-purple);
+}
+
+.event-done {
+  background: rgba(34, 197, 94, 0.08);
+  border-left: 3px solid var(--accent-green);
+}
+
+.event-reasoning .event-header,
+.event-done .event-header {
+  font-weight: 600;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  margin-bottom: 6px;
+}
+
+.event-reasoning .event-header { color: var(--accent-purple); }
+.event-done .event-header { color: var(--accent-green); }
+
+.event-reasoning .event-body,
+.event-done .event-body {
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 /* ─── Explore action row ─────────────────────────────────────────────────── */
 .explore-action {
   padding: 20px 32px 32px;
