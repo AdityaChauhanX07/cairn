@@ -7,7 +7,7 @@ Run from the repo root:
 
 It loads settings from ``.env`` (via the same ``config.py`` the app uses),
 opens an MCP session to ``SPLUNK_MCP_URL`` with ``SPLUNK_TOKEN``, and runs
-twelve checks that exercise the tools Cairn relies on. Each test prints
+eleven checks that exercise the tools Cairn relies on. Each test prints
 status + a pretty-printed slice of the response. If one test fails the
 script continues.
 
@@ -206,11 +206,7 @@ async def t10_run_query(client: SplunkMCPClient) -> Any:
     )
 
 
-async def t11_run_saved_search(client: SplunkMCPClient) -> Any:
-    return await client.run_saved_search("Daily Failed Login Summary")
-
-
-async def t12_user_list(client: SplunkMCPClient) -> Any:
+async def t11_user_list(client: SplunkMCPClient) -> Any:
     return await client.get_user_list()
 
 
@@ -225,8 +221,7 @@ TESTS: tuple[tuple[str, TestFn], ...] = (
     ("splunk_get_knowledge_objects: views", t8_knowledge_views),
     ("splunk_get_knowledge_objects: lookups", t9_knowledge_lookups),
     ("splunk_run_query (auth_events failures)", t10_run_query),
-    ("splunk_run_saved_search 'Daily Failed Login Summary'", t11_run_saved_search),
-    ("splunk_get_user_list", t12_user_list),
+    ("splunk_get_user_list", t11_user_list),
 )
 
 

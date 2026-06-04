@@ -102,7 +102,6 @@ TOOL_GET_USER_LIST = "splunk_get_user_list"
 TOOL_GET_USER_INFO = "splunk_get_user_info"
 TOOL_GET_KV_STORE_COLLECTIONS = "splunk_get_kv_store_collections"
 TOOL_RUN_QUERY = "splunk_run_query"
-TOOL_RUN_SAVED_SEARCH = "splunk_run_saved_search"
 
 # Optional saia_* tools — require AI Assistant for SPL.
 TOOL_EXPLAIN_SPL = "saia_explain_spl"
@@ -118,7 +117,6 @@ CORE_TOOLS: tuple[str, ...] = (
     TOOL_GET_USER_INFO,
     TOOL_GET_KV_STORE_COLLECTIONS,
     TOOL_RUN_QUERY,
-    TOOL_RUN_SAVED_SEARCH,
 )
 
 OPTIONAL_TOOLS: tuple[str, ...] = (
@@ -212,7 +210,7 @@ class SplunkMCPClient:
         url: str,
         token: str,
         *,
-        default_earliest: str = "0",
+        default_earliest: str = "-24h",
         default_latest: str = "now",
         default_result_cap: int = 1000,
         transport: str = TRANSPORT_STREAMABLE_HTTP,
@@ -491,22 +489,6 @@ class SplunkMCPClient:
             "latest_time": latest or self._default_latest,
         }
         return _expect_dict(await self._call(TOOL_RUN_QUERY, args))
-
-    async def run_saved_search(
-        self,
-        name: str,
-        *,
-        owner: str | None = None,
-        app: str | None = None,
-        trigger_actions: bool = False,
-    ) -> dict[str, Any]:
-        """Dispatch a saved search and return its results."""
-        args: dict[str, Any] = {"saved_search_name": name, "trigger_actions": trigger_actions}
-        if owner is not None:
-            args["owner"] = owner
-        if app is not None:
-            args["app"] = app
-        return _expect_dict(await self._call(TOOL_RUN_SAVED_SEARCH, args))
 
     # ---- saia_* tools (optional) ----
 

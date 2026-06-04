@@ -86,7 +86,6 @@ Cairn uses **12 tools** across two namespaces exposed by the Splunk MCP server.
 | `splunk_get_user_info` | Roles and capabilities per user. |
 | `splunk_get_kv_store_collections` | App-state collections that often back custom apps. |
 | `splunk_run_query` | Ad-hoc SPL — guard-railed with `\| head 1000` and `earliest=-24h`. |
-| `splunk_run_saved_search` | Replay a saved search to see what it actually returns. |
 
 ### `saia_*` (AI Assistant for SPL — optional)
 

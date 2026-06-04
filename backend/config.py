@@ -59,11 +59,11 @@ class Settings(BaseSettings):
 
     # ---- Agent behavior ----
     default_earliest: str = Field(
-        default="0",
+        default="-24h",
         description=(
-            "Default earliest= for ad-hoc SPL when none provided. "
-            "'0' means 'all time' — appropriate when demo data may be older "
-            "than the last 24h. Override in .env for production."
+            "Default earliest= for ad-hoc SPL when none provided. Bounded to "
+            "the last 24h to keep guarded queries fast and within MCP limits. "
+            "Override in .env if demo data is older than the last 24h."
         ),
     )
     default_result_cap: int = Field(

@@ -614,8 +614,9 @@ class Orchestrator:
           2. If the question contains live-data keywords, ask the LLM to
              generate a short SPL query against the known indexes. Run it
              via ``splunk_run_query`` and add the result rows to context.
-          3. If the question names a known saved search, dispatch it via
-             ``splunk_run_saved_search`` and add those rows too.
+          3. If the question names a known saved search, replay that saved
+             search's own SPL via the guarded ``splunk_run_query`` (we do not
+             dispatch the saved search itself) and add those rows too.
           4. Ask the LLM for the final answer with the (possibly enriched)
              context.
 
@@ -652,7 +653,9 @@ class Orchestrator:
                 spl = None
             if spl and spl.upper() != "NO_QUERY":
                 try:
-                    result = await self._mcp.run_query(spl, earliest="0")
+                    # No forced time range — use the client's default (-24h)
+                    # unless the user's question implied one upstream.
+                    result = await self._mcp.run_query(spl)
                 except SplunkMCPError as exc:
                     logger.info("live SPL %r failed: %s", spl, exc)
                 else:
@@ -661,18 +664,33 @@ class Orchestrator:
                         f"{json.dumps(result, indent=2, default=str)[:3000]}"
                     )
 
-        # ---- saved-search dispatch (if the question names one) ----
+        # ---- saved-search replay (if the question names one) ----
+        # We do NOT dispatch the saved search via the MCP server (the official
+        # tool set has no read-only "run saved search", and dispatching can fire
+        # alert actions). Instead we replay the saved search's *own SPL* — already
+        # captured on the graph node at discovery time — through the guarded
+        # run_query path (auto `| head 1000`, default time bound).
         named_search = self._match_known_search(question)
         if named_search is not None:
-            try:
-                ss_result = await self._mcp.run_saved_search(named_search)
-            except SplunkMCPError as exc:
-                logger.info("saved-search %r failed: %s", named_search, exc)
-            else:
-                live_sections.append(
-                    f"SAVED SEARCH RESULTS (`{named_search}`):\n"
-                    f"{json.dumps(ss_result, indent=2, default=str)[:3000]}"
+            spl = self._saved_search_spl(named_search)
+            if not spl:
+                # TODO: fetch SPL via get_knowledge_objects(saved_searches) if the
+                # node lacks it; for now degrade gracefully rather than guess.
+                logger.info(
+                    "no SPL on graph node for %r; replaying saved searches isn't "
+                    "supported without the underlying SPL — skipping live replay",
+                    named_search,
                 )
+            else:
+                try:
+                    ss_result = await self._mcp.run_query(spl)
+                except SplunkMCPError as exc:
+                    logger.info("saved-search SPL replay %r failed: %s", named_search, exc)
+                else:
+                    live_sections.append(
+                        f"SAVED SEARCH RESULTS (`{named_search}`, replayed via run_query):\n"
+                        f"{json.dumps(ss_result, indent=2, default=str)[:3000]}"
+                    )
 
         prompt_parts = [
             "You are Cairn, an AI assistant that already explored this Splunk "
@@ -732,6 +750,21 @@ class Orchestrator:
                     best = node.name
                     best_len = len(node.name)
         return best
+
+    def _saved_search_spl(self, name: str) -> str | None:
+        """Return the SPL of a saved search / alert node by name, if captured.
+
+        SPL is stored on the node at discovery time (``properties["spl"]``).
+        Returns ``None`` when no matching node exists or it carries no SPL.
+        """
+        for kind in (NodeType.ALERT, NodeType.SAVED_SEARCH):
+            node = self._graph.get_node(self._graph.make_id(kind, name))
+            if node is None:
+                continue
+            spl = node.properties.get("spl")
+            if isinstance(spl, str) and spl.strip():
+                return spl
+        return None
 
 
 # ---- Section definitions --------------------------------------------------

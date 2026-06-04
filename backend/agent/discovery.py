@@ -698,9 +698,9 @@ class DiscoveryEngine:
             "max(_time) as last_run by savedsearch_name"
         )
         try:
-            # earliest="0" — all time — because demo data may be older than
-            # the last 24h and we'd otherwise show "no usage" for everything.
-            res = await self._client.run_query(usage_spl, earliest="0")
+            # _audit is an internal index — bound usage lookback to -7d (wider
+            # than the -24h default for user indexes, narrow enough to stay fast).
+            res = await self._client.run_query(usage_spl, earliest="-7d")
         except SplunkMCPError as exc:
             yield Finding(
                 kind="error",
@@ -734,13 +734,28 @@ class DiscoveryEngine:
     # ---- replay a saved search to see what it returns ----
 
     async def sample_saved_search(self, name: str) -> Finding:
-        """Dispatch a saved search and capture a short summary of its output."""
+        """Sample a saved search's output by replaying its own SPL.
+
+        We do NOT dispatch the saved search via the MCP server (no read-only
+        "run saved search" exists in the official tool set, and dispatching can
+        fire alert actions). Instead we replay the saved search's captured SPL
+        through the guarded ``run_query`` path.
+        """
+        node = self._graph.get_node(self._graph.make_id(NodeType.SAVED_SEARCH, name))
+        if node is None:
+            node = self._graph.get_node(self._graph.make_id(NodeType.ALERT, name))
+        spl = node.properties.get("spl") if node is not None else None
+        if not isinstance(spl, str) or not spl.strip():
+            return Finding(
+                kind="error",
+                message=f"no SPL captured for saved search {name}; cannot replay",
+            )
         try:
-            result = await self._client.run_saved_search(name)
+            result = await self._client.run_query(spl)
         except SplunkMCPError as exc:
             return Finding(
                 kind="error",
-                message=f"failed to run saved search {name}",
+                message=f"failed to replay saved search {name}",
                 detail=str(exc),
             )
         rows = _extract_rows(result)
