@@ -11,6 +11,7 @@ Endpoints (call order: connect → explore → generate → guide/ask/export):
 - ``GET  /api/explore``    — SSE: stream agent events from the discovery flow
 - ``GET  /api/generate``   — SSE: stream events as the onboarding guide is written
 - ``GET  /api/guide``      — fetch the generated guide as JSON
+- ``GET  /api/graph``      — fetch the current relationship graph (for the viz)
 - ``POST /api/ask``        — follow-up Q&A (optionally runs live SPL)
 - ``GET  /api/export``     — export the guide (markdown | html)
 - ``GET  /api/health``     — liveness probe
@@ -238,6 +239,19 @@ async def get_guide() -> dict[str, Any]:
     """Return the synthesized onboarding guide as JSON."""
     session = _current_session(require_guide=True)
     return session.orchestrator.guide.to_dict()  # type: ignore[union-attr]
+
+
+@router.get("/graph")
+async def get_graph() -> dict[str, Any]:
+    """Return the current relationship graph (trimmed for visualization).
+
+    Available as soon as a session exists; before exploration runs it simply
+    returns empty node / edge lists. The frontend uses this for the static
+    graph in the guide view (the live explore view builds its graph from the
+    SSE event stream instead).
+    """
+    session = _current_session()
+    return session.orchestrator.graph.relationship_view()
 
 
 @router.post("/ask", response_model=AskResponse)

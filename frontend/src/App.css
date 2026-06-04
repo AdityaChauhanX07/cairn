@@ -830,6 +830,75 @@ html, body {
 .chat-input:disabled { opacity: 0.5; }
 .chat-send-btn { align-self: flex-end; min-width: 52px; font-size: 16px; }
 
+/* ─── Relationship graph ─────────────────────────────────────────────────── */
+.graph-container {
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  padding: 16px;
+  overflow-x: auto;
+}
+
+.relationship-graph { user-select: none; }
+
+.graph-node {
+  cursor: pointer;
+  transition: opacity 300ms ease;
+}
+.graph-node rect { transition: fill-opacity 300ms ease, stroke-opacity 300ms ease; }
+.graph-node:hover rect { stroke-opacity: 0.9; }
+
+.graph-node.entering { animation: nodeEnter 400ms ease forwards; transform-box: fill-box; transform-origin: center; }
+@keyframes nodeEnter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.graph-node-label {
+  font-family: var(--font-machine);
+  font-size: 0.72rem;
+  pointer-events: none;
+  transition: fill 300ms ease;
+}
+
+.graph-edge {
+  transition: stroke 300ms ease, opacity 300ms ease, stroke-width 300ms ease;
+}
+.graph-edge.edge-entering { animation: edgeEnter 400ms ease 200ms backwards; }
+@keyframes edgeEnter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.graph-dimmed { opacity: 0.2; }
+
+/* Guide-view framing for the static graph above the sections */
+.guide-graph {
+  margin-bottom: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  overflow: hidden;
+}
+.guide-graph-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 13px 16px;
+}
+.guide-graph-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.guide-graph-hint {
+  margin-left: auto;
+  font-family: var(--font-machine);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.guide-graph .graph-container { border-top: 1px solid var(--border); }
+
 /* ─── Scrollbar ──────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }

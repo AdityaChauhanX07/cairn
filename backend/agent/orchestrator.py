@@ -104,6 +104,11 @@ class OnboardingGuide:
     markdown: str
     sections: dict[str, str] = field(default_factory=dict)
     graph_snapshot: dict[str, Any] = field(default_factory=dict)
+    # The trimmed node / edge lists the frontend RelationshipGraph renders.
+    # Separate from ``graph_snapshot`` (which carries the full, unfiltered
+    # graph) so the UI can draw the dependency picture without re-filtering.
+    graph_nodes: list[dict[str, Any]] = field(default_factory=list)
+    graph_edges: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -271,11 +276,26 @@ class Orchestrator:
                     detail=str(exc),
                 )
 
+    def _with_graph(self, event: AgentEvent) -> AgentEvent:
+        """Attach the current relationship-graph snapshot to an event.
+
+        The frontend accumulates these node / edge lists as exploration
+        streams, so the graph visualization can build itself in real time.
+        We send the full current view (not just the delta) — with demo-sized
+        graphs it's a handful of KB, and the client just keeps the latest.
+        """
+        rel = self._graph.relationship_view()
+        data = dict(event.data or {})
+        data["graph_nodes"] = rel["nodes"]
+        data["graph_edges"] = rel["edges"]
+        event.data = data
+        return event
+
     async def _run_explore(self) -> AsyncIterator[AgentEvent]:
         # ---- Orient ----
         yield AgentEvent(phase=AgentPhase.ORIENT, message="getting the lay of the land")
         async for finding in self._discovery.orient():
-            yield _finding_to_event(AgentPhase.ORIENT, finding)
+            yield self._with_graph(_finding_to_event(AgentPhase.ORIENT, finding))
             await self._discovery.yield_back()
 
         # ---- Discover knowledge objects ----
@@ -283,7 +303,7 @@ class Orchestrator:
             phase=AgentPhase.INVESTIGATE, message="enumerating knowledge objects"
         )
         async for finding in self._discovery.discover_knowledge_objects():
-            yield _finding_to_event(AgentPhase.INVESTIGATE, finding)
+            yield self._with_graph(_finding_to_event(AgentPhase.INVESTIGATE, finding))
             await self._discovery.yield_back()
 
         # ---- Reason: high-level observation post-discovery (1 LLM call) ----
@@ -310,7 +330,7 @@ class Orchestrator:
         # ---- Enrich indexes ----
         yield AgentEvent(phase=AgentPhase.INVESTIGATE, message="profiling indexes")
         async for finding in self._discovery.enrich_indexes():
-            yield _finding_to_event(AgentPhase.INVESTIGATE, finding)
+            yield self._with_graph(_finding_to_event(AgentPhase.INVESTIGATE, finding))
             await self._discovery.yield_back()
 
         # ---- Resolve placeholders ----
@@ -322,7 +342,7 @@ class Orchestrator:
                 data={"placeholders": [p.name for p in unresolved][:20]},
             )
             async for finding in self._discovery.resolve_placeholders():
-                yield _finding_to_event(AgentPhase.INVESTIGATE, finding)
+                yield self._with_graph(_finding_to_event(AgentPhase.INVESTIGATE, finding))
 
         # ---- Usage data ----
         yield AgentEvent(
@@ -343,10 +363,12 @@ class Orchestrator:
         ):
             yield _finding_to_event(AgentPhase.INVESTIGATE, finding)
 
-        yield AgentEvent(
-            phase=AgentPhase.DONE,
-            message="exploration complete; ready to generate guide",
-            data={"summary": self._graph.summary()},
+        yield self._with_graph(
+            AgentEvent(
+                phase=AgentPhase.DONE,
+                message="exploration complete; ready to generate guide",
+                data={"summary": self._graph.summary()},
+            )
         )
 
     # ---- Reason step ----
@@ -444,10 +466,13 @@ class Orchestrator:
             )
 
         markdown = "\n".join(markdown_chunks).strip()
+        rel = self._graph.relationship_view()
         self._guide = OnboardingGuide(
             markdown=markdown,
             sections=sections,
             graph_snapshot=graph_snapshot,
+            graph_nodes=rel["nodes"],
+            graph_edges=rel["edges"],
         )
         yield AgentEvent(
             phase=AgentPhase.DONE,

@@ -1,4 +1,4 @@
-import type { AgentEvent, Guide } from '../types';
+import type { AgentEvent, Guide, GraphData } from '../types';
 
 const BASE = 'http://localhost:8000/api';
 
@@ -118,6 +118,12 @@ export async function getGuide(): Promise<Guide> {
   const res = await fetch(`${BASE}/guide`);
   if (!res.ok) throw new Error(`Failed to load guide: ${res.statusText}`);
   return res.json() as Promise<Guide>;
+}
+
+export async function getGraph(): Promise<GraphData> {
+  const res = await fetch(`${BASE}/graph`);
+  if (!res.ok) throw new Error(`Failed to load graph: ${res.statusText}`);
+  return res.json() as Promise<GraphData>;
 }
 
 export async function askQuestion(question: string): Promise<string> {

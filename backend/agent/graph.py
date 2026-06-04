@@ -442,3 +442,61 @@ class RelationshipGraph:
             "edges": [e.to_dict() for e in self._edges],
             "summary": self.summary(),
         }
+
+    def relationship_view(self) -> dict[str, list[dict[str, Any]]]:
+        """The trimmed graph the UI visualizes.
+
+        Only the node types that tell the dependency story (alert → saved
+        search → macro → lookup → index) and only the dependency edges between
+        them. Placeholders (referenced but never discovered), Splunk-internal
+        indexes (``_audit`` etc.), and metadata edges (ownership / app
+        placement / sourcetype) are dropped so the picture stays legible.
+        """
+        node_ids: set[str] = set()
+        nodes_out: list[dict[str, Any]] = []
+        for node in self._nodes.values():
+            if node.type not in _VIEW_NODE_TYPES:
+                continue
+            if node.properties.get("placeholder"):
+                continue
+            if node.type == NodeType.INDEX and node.name.startswith("_"):
+                continue
+            node_ids.add(node.id)
+            nodes_out.append(
+                {"id": node.id, "name": node.name, "type": node.type.value}
+            )
+
+        edges_out: list[dict[str, Any]] = []
+        for edge in self._edges:
+            if edge.type not in _VIEW_EDGE_TYPES:
+                continue
+            if edge.source not in node_ids or edge.target not in node_ids:
+                continue
+            edges_out.append(
+                {
+                    "source": edge.source,
+                    "target": edge.target,
+                    "relationship": edge.type.value,
+                }
+            )
+
+        return {"nodes": nodes_out, "edges": edges_out}
+
+
+# Node / edge types that make it into ``relationship_view`` — the visual graph.
+_VIEW_NODE_TYPES: frozenset[NodeType] = frozenset(
+    {
+        NodeType.ALERT,
+        NodeType.SAVED_SEARCH,
+        NodeType.MACRO,
+        NodeType.LOOKUP,
+        NodeType.INDEX,
+    }
+)
+_VIEW_EDGE_TYPES: frozenset[EdgeType] = frozenset(
+    {
+        EdgeType.REFERENCES_MACRO,
+        EdgeType.REFERENCES_LOOKUP,
+        EdgeType.READS_FROM_INDEX,
+    }
+)

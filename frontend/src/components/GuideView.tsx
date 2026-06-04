@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useRef, forwardRef } from 'react';
 import { getGuide, exportGuide } from '../utils/api';
 import { markdownToHtml } from '../utils/markdown';
 import { loadEnv, envSummaryLine } from '../utils/env';
-import type { Guide, GuideSection } from '../types';
+import RelationshipGraph from './RelationshipGraph';
+import type { Guide, GuideSection, GraphNode, GraphEdge } from '../types';
 
 interface Props {
   onStartChat: () => void;
@@ -92,6 +93,38 @@ function navCount(title: string, c: Counts): string {
   }
 }
 
+// Edge relationships and node types the visualization cares about — used when
+// falling back to the full graph_snapshot for guides generated before the
+// trimmed graph_nodes / graph_edges fields existed.
+const VIEW_NODE_TYPES = ['alert', 'saved_search', 'macro', 'lookup', 'index'];
+const VIEW_EDGE_TYPES = ['references_macro', 'references_lookup', 'reads_from_index'];
+
+function deriveGuideGraph(guide: Guide): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  // Preferred: the backend already trimmed these for us.
+  if (guide.graph_nodes && guide.graph_edges) {
+    return { nodes: guide.graph_nodes, edges: guide.graph_edges };
+  }
+  // Fallback: filter the full snapshot the same way the backend would.
+  const snapNodes = (guide.graph_snapshot?.nodes as SnapNode[] | undefined) ?? [];
+  const snapEdges =
+    (guide.graph_snapshot?.edges as { source: string; target: string; type: string }[] | undefined) ?? [];
+  const nodes: GraphNode[] = [];
+  const ids = new Set<string>();
+  for (const n of snapNodes) {
+    const anyN = n as SnapNode & { id?: string };
+    if (!VIEW_NODE_TYPES.includes(n.type)) continue;
+    if (n.properties?.placeholder) continue;
+    if (n.type === 'index' && n.name.startsWith('_')) continue;
+    const id = anyN.id ?? `${n.type}:${n.name}`;
+    ids.add(id);
+    nodes.push({ id, name: n.name, type: n.type as GraphNode['type'] });
+  }
+  const edges: GraphEdge[] = snapEdges
+    .filter((e) => VIEW_EDGE_TYPES.includes(e.type) && ids.has(e.source) && ids.has(e.target))
+    .map((e) => ({ source: e.source, target: e.target, relationship: e.type }));
+  return { nodes, edges };
+}
+
 export default function GuideView({ onStartChat, onReExplore, showChat }: Props) {
   const [guide, setGuide] = useState<Guide | null>(null);
   const [error, setError] = useState('');
@@ -110,6 +143,7 @@ export default function GuideView({ onStartChat, onReExplore, showChat }: Props)
     [guide]
   );
   const counts = useMemo(() => (guide ? deriveCounts(guide) : null), [guide]);
+  const graph = useMemo(() => (guide ? deriveGuideGraph(guide) : { nodes: [], edges: [] }), [guide]);
   const env = useMemo(() => loadEnv(), []);
 
   // Scroll-spy: highlight the section nearest the top of the viewport.
@@ -222,6 +256,16 @@ export default function GuideView({ onStartChat, onReExplore, showChat }: Props)
             <div className="guide-intro">
               <h1 className="guide-title">{guideTitle}</h1>
             </div>
+
+            {graph.edges.length > 0 && (
+              <div className="guide-graph">
+                <div className="guide-graph-header">
+                  <span className="guide-graph-title">Dependency map</span>
+                  <span className="guide-graph-hint">Click an alert to trace its chain</span>
+                </div>
+                <RelationshipGraph nodes={graph.nodes} edges={graph.edges} />
+              </div>
+            )}
 
             <div className="guide-sections">
               {sections.map((section, i) => (

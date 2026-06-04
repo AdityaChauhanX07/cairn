@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { exploreSSE, generateSSE } from '../utils/api';
 import { parseDeploymentInfo, connectedHost, saveEnv, envSummaryLine } from '../utils/env';
 import type { CairnEnv } from '../utils/env';
-import type { AgentEvent } from '../types';
+import type { AgentEvent, GraphNode, GraphEdge } from '../types';
+import RelationshipGraph from './RelationshipGraph';
 
 interface Props {
   onGuideReady: () => void;
@@ -81,6 +82,20 @@ function deriveCounts(events: AgentEvent[]): Counts {
   return c;
 }
 
+// Accumulate the relationship graph from the SSE stream. Each event carries
+// the full current node/edge view, so we keep the last non-empty snapshot —
+// the graph only ever grows during a single exploration.
+function deriveGraph(events: AgentEvent[]): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  let nodes: GraphNode[] = [];
+  let edges: GraphEdge[] = [];
+  for (const ev of events) {
+    const d = eventData(ev);
+    if (Array.isArray(d.graph_nodes)) nodes = d.graph_nodes as GraphNode[];
+    if (Array.isArray(d.graph_edges)) edges = d.graph_edges as GraphEdge[];
+  }
+  return { nodes, edges };
+}
+
 function deriveEnv(events: AgentEvent[]): CairnEnv {
   let env: CairnEnv = {};
   for (const ev of events) {
@@ -130,6 +145,7 @@ export default function ExploreView({ onGuideReady }: Props) {
     [events, genEvents]
   );
   const counts = useMemo(() => deriveCounts(allEvents), [allEvents]);
+  const graph = useMemo(() => deriveGraph(allEvents), [allEvents]);
   const env = useMemo(() => deriveEnv(allEvents), [allEvents]);
   const maxSeen = useMemo(() => maxPhaseSeen(allEvents), [allEvents]);
   const envLine = envSummaryLine(env);
@@ -255,6 +271,13 @@ export default function ExploreView({ onGuideReady }: Props) {
                 })}
               </div>
             </div>
+
+            {graph.edges.length > 0 && (
+              <div>
+                <div className="dash-block-label">Relationship graph</div>
+                <RelationshipGraph nodes={graph.nodes} edges={graph.edges} animated />
+              </div>
+            )}
 
             {phase === 'explored' && (
               <div className="dash-action">
