@@ -6,7 +6,23 @@ import type { ChatMessage } from '../types';
 const SUGGESTED_QUESTION =
   "What does 'Critical: Multiple Failed Logins from Same IP' mean and what should I do when it fires?";
 
-export default function ChatView() {
+interface Props {
+  onChipClick?: (term: string) => void;
+}
+
+// Catch clicks bubbling up from a rendered Splunk-object chip and forward the
+// term. Shared by every markdown surface so the behavior stays uniform.
+function chipClickHandler(onChipClick?: (term: string) => void) {
+  return (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.classList.contains('chip-clickable')) {
+      const term = target.getAttribute('data-term');
+      if (term) onChipClick?.(term);
+    }
+  };
+}
+
+export default function ChatView({ onChipClick }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -47,7 +63,7 @@ export default function ChatView() {
       {messages.length > 0 && (
         <div className="chat-messages">
           {messages.map((msg, i) => (
-            <ChatBubble key={i} message={msg} />
+            <ChatBubble key={i} message={msg} onChipClick={onChipClick} />
           ))}
           {loading && (
             <div className="chat-bubble assistant">
@@ -99,7 +115,13 @@ export default function ChatView() {
   );
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({
+  message,
+  onChipClick,
+}: {
+  message: ChatMessage;
+  onChipClick?: (term: string) => void;
+}) {
   const isUser = message.role === 'user';
   return (
     <div className={`chat-bubble ${isUser ? 'user' : 'assistant'}`}>
@@ -108,6 +130,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
       ) : (
         <div
           className="bubble-body markdown-body"
+          onClick={chipClickHandler(onChipClick)}
           dangerouslySetInnerHTML={{ __html: markdownToHtml(message.content) }}
         />
       )}

@@ -28,8 +28,14 @@ export function markdownToHtml(md: string): string {
     /^<(h[1-6]|ul|ol|li|pre|hr|blockquote)/.test(t) ||
     /^CAIRNCODEBLOCK\d+$/.test(t);
 
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Inline code — rendered as clickable Splunk-object chips. The raw inner text
+  // is stashed in data-term (quotes escaped for the attribute) so click handlers
+  // in GuideView / ChatView can resolve it to a section or graph node. Fenced
+  // blocks were already pulled out above, so this only touches true inline code.
+  html = html.replace(/`([^`]+)`/g, (_m, code) => {
+    const term = code.replace(/"/g, '&quot;');
+    return `<code class="chip-clickable" data-term="${term}">${code}</code>`;
+  });
 
   // Headers
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');

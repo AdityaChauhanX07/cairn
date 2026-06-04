@@ -5,7 +5,8 @@ interface RelationshipGraphProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
   animated?: boolean; // true during exploration (nodes fade in), false in guide
-  onNodeClick?: (nodeId: string) => void;
+  focusedNodeId?: string | null; // set externally (e.g. by a chip click) to highlight a chain
+  onNodeClick?: (nodeId: string | null) => void;
 }
 
 // Top-to-bottom layering. The dependency story reads downward:
@@ -109,9 +110,17 @@ export default function RelationshipGraph({
   nodes,
   edges,
   animated = false,
+  focusedNodeId,
   onNodeClick,
 }: RelationshipGraphProps) {
   const [focusId, setFocusId] = useState<string | null>(null);
+
+  // Mirror an externally-driven focus (a chip click) into the internal state so
+  // it lights up the same chain as a direct node click. undefined means the
+  // parent isn't controlling focus, so we leave internal interaction alone.
+  useEffect(() => {
+    if (focusedNodeId !== undefined) setFocusId(focusedNodeId);
+  }, [focusedNodeId]);
 
   // Tracks which node / edge keys have already been on screen, so freshly
   // arrived ones (during live exploration) get the enter animation exactly once.
@@ -166,8 +175,9 @@ export default function RelationshipGraph({
   if (relevantEdges.length === 0) return null;
 
   function handleNodeClick(id: string) {
-    setFocusId((cur) => (cur === id ? null : id));
-    onNodeClick?.(id);
+    const next = focusId === id ? null : id;
+    setFocusId(next);
+    onNodeClick?.(next);
   }
 
   function isEdgeHighlighted(e: GraphEdge): boolean {
@@ -176,7 +186,13 @@ export default function RelationshipGraph({
   }
 
   return (
-    <div className="graph-container" onClick={() => setFocusId(null)}>
+    <div
+      className="graph-container"
+      onClick={() => {
+        setFocusId(null);
+        onNodeClick?.(null);
+      }}
+    >
       <svg
         className="relationship-graph"
         viewBox={`0 0 ${width} ${height}`}

@@ -9,6 +9,7 @@ interface Props {
   onStartChat: () => void;
   onReExplore: () => void;
   showChat: boolean;
+  onChipClick?: (term: string) => void;
 }
 
 interface SnapNode {
@@ -125,12 +126,17 @@ function deriveGuideGraph(guide: Guide): { nodes: GraphNode[]; edges: GraphEdge[
   return { nodes, edges };
 }
 
-export default function GuideView({ onStartChat, onReExplore, showChat }: Props) {
+export default function GuideView({ onStartChat, onReExplore, showChat, onChipClick }: Props) {
   const [guide, setGuide] = useState<Guide | null>(null);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  // Sections collapse on demand; a card is open unless its index is in this set.
+  const [closedSections, setClosedSections] = useState<Set<number>>(new Set());
+  // Node lit up by a chip click — fed to the graph so it highlights that chain.
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const sectionRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const graphRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     getGuide()
@@ -164,6 +170,56 @@ export default function GuideView({ onStartChat, onReExplore, showChat }: Props)
     sectionRefs.current.forEach(el => el && observer.observe(el));
     return () => observer.disconnect();
   }, [sections.length]);
+
+  // Resolve a clicked Splunk-object term into (a) an expanded + scrolled guide
+  // section and (b) a highlighted graph chain. Either may match independently;
+  // if only the graph matches we scroll the map into view instead.
+  useEffect(() => {
+    function focusTerm(term: string) {
+      const t = term.trim().toLowerCase();
+      if (!t) return;
+
+      // Graph: prefer an exact name match, else a node whose name is embedded in
+      // the term (handles "index=auth_events" pointing at the "auth_events" node).
+      const node =
+        graph.nodes.find(n => n.name.toLowerCase() === t) ??
+        graph.nodes.find(n => t.includes(n.name.toLowerCase()));
+      setFocusedNodeId(node ? node.id : null);
+
+      // Section: first whose title or body mentions the term (case-insensitive).
+      const idx = sections.findIndex(
+        s => s.title.toLowerCase().includes(t) || s.content.toLowerCase().includes(t),
+      );
+
+      if (idx >= 0) {
+        setClosedSections(prev => {
+          if (!prev.has(idx)) return prev;
+          const next = new Set(prev);
+          next.delete(idx);
+          return next;
+        });
+        // Let the expand paint before scrolling so we land at the real offset.
+        requestAnimationFrame(() =>
+          sectionRefs.current[idx]?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+        );
+      } else if (node) {
+        graphRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+
+    const handler = (e: Event) => focusTerm((e as CustomEvent<string>).detail);
+    window.addEventListener('cairn:chip-click', handler);
+    return () => window.removeEventListener('cairn:chip-click', handler);
+  }, [sections, graph]);
+
+  function toggleSection(i: number) {
+    setClosedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  }
 
   async function handleExport() {
     setExporting(true);
@@ -258,12 +314,17 @@ export default function GuideView({ onStartChat, onReExplore, showChat }: Props)
             </div>
 
             {graph.edges.length > 0 && (
-              <div className="guide-graph">
+              <div className="guide-graph" ref={graphRef}>
                 <div className="guide-graph-header">
                   <span className="guide-graph-title">Dependency map</span>
                   <span className="guide-graph-hint">Click an alert to trace its chain</span>
                 </div>
-                <RelationshipGraph nodes={graph.nodes} edges={graph.edges} />
+                <RelationshipGraph
+                  nodes={graph.nodes}
+                  edges={graph.edges}
+                  focusedNodeId={focusedNodeId}
+                  onNodeClick={setFocusedNodeId}
+                />
               </div>
             )}
 
@@ -275,7 +336,9 @@ export default function GuideView({ onStartChat, onReExplore, showChat }: Props)
                   index={i}
                   section={section}
                   counts={counts}
-                  defaultOpen
+                  open={!closedSections.has(i)}
+                  onToggle={() => toggleSection(i)}
+                  onChipClick={onChipClick}
                 />
               ))}
             </div>
@@ -298,16 +361,25 @@ interface CardProps {
   index: number;
   section: GuideSection;
   counts: Counts;
-  defaultOpen: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onChipClick?: (term: string) => void;
 }
 
 const GuideCard = forwardRef<HTMLDivElement, CardProps>(function GuideCard(
-  { index, section, counts, defaultOpen },
+  { index, section, counts, open, onToggle, onChipClick },
   ref
 ) {
-  const [open, setOpen] = useState(defaultOpen);
   const meta = SECTION_META[section.title] ?? { accent: 'var(--border)', summary: () => '' };
   const summary = meta.summary(counts);
+
+  function handleBodyClick(e: React.MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (target.classList.contains('chip-clickable')) {
+      const term = target.getAttribute('data-term');
+      if (term) onChipClick?.(term);
+    }
+  }
 
   return (
     <div
@@ -316,7 +388,7 @@ const GuideCard = forwardRef<HTMLDivElement, CardProps>(function GuideCard(
       className="guide-card"
       style={{ ['--section-accent' as string]: meta.accent }}
     >
-      <button className="guide-card-header" onClick={() => setOpen(o => !o)}>
+      <button className="guide-card-header" onClick={onToggle}>
         <span className="guide-card-heading">
           <span className="guide-card-title">{section.title}</span>
           {summary && <span className="guide-card-summary">{summary}</span>}
@@ -326,6 +398,7 @@ const GuideCard = forwardRef<HTMLDivElement, CardProps>(function GuideCard(
       {open && (
         <div
           className="guide-card-body"
+          onClick={handleBodyClick}
           dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content || '') }}
         />
       )}

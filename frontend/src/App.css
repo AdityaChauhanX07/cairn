@@ -729,6 +729,16 @@ html, body {
   padding: 1px 6px;
   color: var(--accent-amber);
 }
+/* clickable Splunk-object chips — scroll to a section / light up the graph */
+.chip-clickable {
+  cursor: pointer;
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+.chip-clickable:hover {
+  background: rgba(212, 137, 26, 0.25);
+  box-shadow: 0 0 0 1px var(--accent-amber);
+}
+
 /* dependency trees / SPL — machine block, violet ledge */
 .guide-card-body pre, .markdown-body pre {
   background: var(--bg-base);

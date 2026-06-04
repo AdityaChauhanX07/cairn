@@ -30,6 +30,14 @@ export default function App() {
     setAppState('explore');
   }
 
+  // Shared chip handler: a Splunk-object chip can be clicked from either the
+  // guide or the Q&A chat. Both live as siblings under App, so we fan the term
+  // out over a window event that GuideView (which owns the sections + graph)
+  // resolves into a scroll / highlight.
+  function handleChipClick(term: string) {
+    window.dispatchEvent(new CustomEvent('cairn:chip-click', { detail: term }));
+  }
+
   return (
     <div className="app-root">
       {appState === 'connect' && (
@@ -46,10 +54,15 @@ export default function App() {
 
       {appState === 'guide' && (
         <div className="screen">
-          <GuideView onStartChat={handleStartChat} onReExplore={handleReExplore} showChat={showChat} />
+          <GuideView
+            onStartChat={handleStartChat}
+            onReExplore={handleReExplore}
+            showChat={showChat}
+            onChipClick={handleChipClick}
+          />
           {showChat && (
             <div id="chat-section" className="chat-section">
-              <ChatView />
+              <ChatView onChipClick={handleChipClick} />
             </div>
           )}
         </div>
