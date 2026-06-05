@@ -67,4 +67,36 @@ export interface ChatMessage {
   liveQueries?: LiveQuery[];
 }
 
+// ── Starter kit (Mode C) ────────────────────────────────────────────────────
+// Mirrors StarterKit.to_dict() on the backend.
+export interface GeneratedSPL {
+  title: string;
+  description: string;
+  spl: string;
+  category: string;
+}
+
+export interface Runbook {
+  alert_name: string;
+  severity: string;
+  what_it_means: string;
+  chain_summary: string;
+  first_checks: string[];
+  spl_to_run: string;
+  who_to_contact: string;
+}
+
+export interface DashboardPanel {
+  title: string;
+  spl: string;
+  viz_type: string;
+}
+
+export interface StarterKit {
+  generated_queries: GeneratedSPL[];
+  runbooks: Runbook[];
+  dashboard_panels: DashboardPanel[];
+  dashboard_xml: string;
+}
+
 export type AppState = 'connect' | 'explore' | 'guide' | 'qa';

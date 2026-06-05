@@ -1,4 +1,4 @@
-import type { AgentEvent, Guide, GraphData, AskResponse } from '../types';
+import type { AgentEvent, Guide, GraphData, AskResponse, StarterKit } from '../types';
 import { parseDeploymentInfo } from './env';
 
 const BASE = 'http://localhost:8000/api';
@@ -120,6 +120,36 @@ export function generateSSE(
   onError: (err: string) => void
 ): () => void {
   return streamSSE(`${BASE}/generate`, onEvent, onDone, onError);
+}
+
+// Stream Mode C starter-kit generation. ``onError`` is optional so callers that
+// only care about progress + completion can omit it.
+export function generateStarterKitSSE(
+  onEvent: (event: AgentEvent) => void,
+  onDone: () => void,
+  onError?: (err: string) => void
+): () => void {
+  return streamSSE(`${BASE}/starter-kit`, onEvent, onDone, onError ?? (() => {}));
+}
+
+export async function getStarterKit(): Promise<StarterKit> {
+  const res = await fetch(`${BASE}/starter-kit/data`);
+  if (!res.ok) throw new Error(`Failed to load starter kit: ${res.statusText}`);
+  return res.json() as Promise<StarterKit>;
+}
+
+// Fetch the generated Simple XML and trigger a real browser download.
+export async function downloadDashboardXml(): Promise<void> {
+  const res = await fetch(`${BASE}/starter-kit/dashboard-xml`);
+  if (!res.ok) throw new Error(`Dashboard download failed: ${res.statusText}`);
+  const xml = await res.text();
+  const blob = new Blob([xml], { type: 'application/xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'cairn-starter-dashboard.xml';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export async function getGuide(): Promise<Guide> {

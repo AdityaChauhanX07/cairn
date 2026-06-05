@@ -1,13 +1,23 @@
 import { useState, useEffect, useMemo, useRef, forwardRef, type ReactNode } from 'react';
-import { getGuide, exportGuide } from '../utils/api';
+import { getGuide, exportGuide, generateStarterKitSSE, getStarterKit } from '../utils/api';
 import { markdownToHtml } from '../utils/markdown';
 import { loadEnv, envSummaryLine } from '../utils/env';
 import RelationshipGraph from './RelationshipGraph';
 import ChatView from './ChatView';
 import CairnMark from './CairnMark';
 import IndexTiles, { categorize, type IndexTile } from './IndexTiles';
+import StarterKitView from './StarterKitView';
 import { SkeletonGuide, SkeletonText } from './Skeleton';
-import type { Guide, GuideSection, GraphNode, GraphEdge } from '../types';
+import type { Guide, GuideSection, GraphNode, GraphEdge, StarterKit } from '../types';
+
+type ActiveView = 'guide' | 'starter-kit';
+type KitSection = 'queries' | 'runbooks' | 'dashboard';
+
+const KIT_SECTIONS: { key: KitSection; label: string }[] = [
+  { key: 'queries', label: 'Generated Queries' },
+  { key: 'runbooks', label: 'Alert Runbooks' },
+  { key: 'dashboard', label: 'Dashboard Skeleton' },
+];
 
 // Title of the section the index-tile visualization belongs above.
 const DATA_LANDSCAPE_TITLE = 'Your Data Landscape';
@@ -145,11 +155,48 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
   const sectionRefs = useRef<(HTMLDivElement | null)[]>([]);
   const graphRef = useRef<HTMLDivElement | null>(null);
 
+  // ── Mode C: starter kit ──
+  const [activeView, setActiveView] = useState<ActiveView>('guide');
+  const [starterKit, setStarterKit] = useState<StarterKit | null>(null);
+  const [kitGenerating, setKitGenerating] = useState(false);
+  const [kitProgress, setKitProgress] = useState<string[]>([]);
+  const [kitError, setKitError] = useState('');
+  const [kitSection, setKitSection] = useState<KitSection>('queries');
+  const kitCancelRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     getGuide()
       .then(setGuide)
       .catch(err => setError(err instanceof Error ? err.message : String(err)));
   }, []);
+
+  // Tear down any in-flight starter-kit stream if the view unmounts.
+  useEffect(() => () => { kitCancelRef.current?.(); }, []);
+
+  // Switch to the starter kit, kicking off generation the first time. Repeat
+  // clicks just re-show the already-generated kit (or the in-progress stream).
+  function openStarterKit() {
+    setActiveView('starter-kit');
+    if (starterKit || kitGenerating) return;
+    setKitError('');
+    setKitProgress([]);
+    setKitGenerating(true);
+    kitCancelRef.current = generateStarterKitSSE(
+      (ev) => { if (ev.message) setKitProgress(prev => [...prev, ev.message]); },
+      () => {
+        getStarterKit()
+          .then(setStarterKit)
+          .catch(err => setKitError(err instanceof Error ? err.message : String(err)))
+          .finally(() => setKitGenerating(false));
+      },
+      (err) => { setKitError(err); setKitGenerating(false); },
+    );
+  }
+
+  function jumpToKitSection(key: KitSection) {
+    setKitSection(key);
+    document.getElementById(`starter-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
   const sections: GuideSection[] = useMemo(
     () => (guide ? Object.entries(guide.sections ?? {}).map(([title, content]) => ({ title, content })) : []),
@@ -200,6 +247,9 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
     function focusTerm(term: string) {
       const t = term.trim().toLowerCase();
       if (!t) return;
+      // Object chips resolve to the guide (sections + dependency map), so make
+      // sure we're showing it rather than the starter kit.
+      setActiveView('guide');
       // On narrow screens the chat is an overlay — close it so the scroll /
       // highlight it triggers is actually visible behind it.
       setChatOpen(false);
@@ -296,6 +346,15 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
           <button className="btn btn-secondary btn-sm" onClick={onReExplore}>
             Re-explore
           </button>
+          {activeView === 'guide' ? (
+            <button className="btn btn-amber-outline btn-sm" onClick={openStarterKit}>
+              {kitGenerating ? 'Building…' : starterKit ? 'Starter Kit' : 'Build Starter Kit'}
+            </button>
+          ) : (
+            <button className="btn btn-secondary btn-sm" onClick={() => setActiveView('guide')}>
+              Back to Guide
+            </button>
+          )}
           <button className="btn btn-primary btn-sm" onClick={handleExport} disabled={exporting}>
             {exporting ? 'Exporting…' : 'Export as Markdown'}
           </button>
@@ -319,61 +378,116 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
       {guide && counts && (
         <div className="guide-layout">
           <nav className="guide-nav">
-            <div className="guide-nav-label">Sections</div>
-            {sections.map((s, i) => {
-              const badge = navCount(s.title, counts);
-              return (
+            {activeView === 'guide' ? (
+              <>
+                <div className="guide-nav-label">Sections</div>
+                {sections.map((s, i) => {
+                  const badge = navCount(s.title, counts);
+                  return (
+                    <button
+                      key={i}
+                      className={`guide-nav-item ${i === activeIndex ? 'active' : ''}`}
+                      onClick={() => jumpTo(i)}
+                    >
+                      <span>{s.title}</span>
+                      {badge && <span className="guide-nav-count">{badge}</span>}
+                    </button>
+                  );
+                })}
+
+                <div className="guide-nav-divider" />
                 <button
-                  key={i}
-                  className={`guide-nav-item ${i === activeIndex ? 'active' : ''}`}
-                  onClick={() => jumpTo(i)}
+                  className="guide-nav-item guide-nav-starter"
+                  onClick={openStarterKit}
                 >
-                  <span>{s.title}</span>
-                  {badge && <span className="guide-nav-count">{badge}</span>}
+                  <span>Starter Kit</span>
+                  <span className="guide-nav-mode-tag">Mode C</span>
                 </button>
-              );
-            })}
+              </>
+            ) : (
+              <>
+                <button
+                  className="guide-nav-item guide-nav-back"
+                  onClick={() => setActiveView('guide')}
+                >
+                  <span>← Back to Guide</span>
+                </button>
+                <div className="guide-nav-label guide-nav-label-amber">Starter Kit</div>
+                {KIT_SECTIONS.map(({ key, label }) => {
+                  const badge = starterKit
+                    ? key === 'queries'
+                      ? starterKit.generated_queries.length
+                      : key === 'runbooks'
+                        ? starterKit.runbooks.length
+                        : starterKit.dashboard_panels.length
+                    : null;
+                  return (
+                    <button
+                      key={key}
+                      className={`guide-nav-item guide-nav-starter ${kitSection === key ? 'active' : ''}`}
+                      onClick={() => jumpToKitSection(key)}
+                      disabled={!starterKit}
+                    >
+                      <span>{label}</span>
+                      {badge !== null && <span className="guide-nav-count">{badge}</span>}
+                    </button>
+                  );
+                })}
+              </>
+            )}
           </nav>
 
           <div className="guide-content">
-            <div className="guide-intro">
-              <h1 className="guide-title">{guideTitle}</h1>
-            </div>
-
-            {graph.edges.length > 0 && (
-              <div className="guide-graph" ref={graphRef}>
-                <div className="guide-graph-header">
-                  <span className="guide-graph-title">Dependency map</span>
-                  <span className="guide-graph-hint">Click an alert to trace its chain</span>
+            {activeView === 'guide' ? (
+              <>
+                <div className="guide-intro">
+                  <h1 className="guide-title">{guideTitle}</h1>
                 </div>
-                <RelationshipGraph
-                  nodes={graph.nodes}
-                  edges={graph.edges}
-                  focusedNodeId={focusedNodeId}
-                  onNodeClick={setFocusedNodeId}
-                />
-              </div>
-            )}
 
-            <div className="guide-sections">
-              {sections.map((section, i) => (
-                <GuideCard
-                  key={i}
-                  ref={el => { sectionRefs.current[i] = el; }}
-                  index={i}
-                  section={section}
-                  counts={counts}
-                  open={!closedSections.has(i)}
-                  onToggle={() => toggleSection(i)}
-                  onChipClick={onChipClick}
-                  topSlot={
-                    section.title === DATA_LANDSCAPE_TITLE ? (
-                      <IndexTiles indexes={indexTiles} />
-                    ) : undefined
-                  }
-                />
-              ))}
-            </div>
+                {graph.edges.length > 0 && (
+                  <div className="guide-graph" ref={graphRef}>
+                    <div className="guide-graph-header">
+                      <span className="guide-graph-title">Dependency map</span>
+                      <span className="guide-graph-hint">Click an alert to trace its chain</span>
+                    </div>
+                    <RelationshipGraph
+                      nodes={graph.nodes}
+                      edges={graph.edges}
+                      focusedNodeId={focusedNodeId}
+                      onNodeClick={setFocusedNodeId}
+                    />
+                  </div>
+                )}
+
+                <div className="guide-sections">
+                  {sections.map((section, i) => (
+                    <GuideCard
+                      key={i}
+                      ref={el => { sectionRefs.current[i] = el; }}
+                      index={i}
+                      section={section}
+                      counts={counts}
+                      open={!closedSections.has(i)}
+                      onToggle={() => toggleSection(i)}
+                      onChipClick={onChipClick}
+                      topSlot={
+                        section.title === DATA_LANDSCAPE_TITLE ? (
+                          <IndexTiles indexes={indexTiles} />
+                        ) : undefined
+                      }
+                    />
+                  ))}
+                </div>
+              </>
+            ) : (
+              <StarterKitView
+                kit={starterKit}
+                generating={kitGenerating}
+                progress={kitProgress}
+                error={kitError}
+                onBack={() => setActiveView('guide')}
+              />
+            )}
           </div>
 
           <aside className={`guide-chat ${chatOpen ? 'open' : ''}`}>
