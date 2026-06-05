@@ -403,6 +403,47 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
   );
 }
 
+// A section is "thin" when there's not enough signal to be worth a full card —
+// either it's very short or the backend told us there's nothing to show. We
+// surface these as compact, muted cards that explain what they'd show instead.
+function isThinSection(content: string): boolean {
+  const stripped = content.replace(/[#*`_[\]]/g, '').trim();
+  if (stripped.length < 200) return true;
+  const thinPhrases = [
+    'no ownership signals',
+    'no specific guidance',
+    'not currently used by any',
+    'there are no',
+    'no data available',
+    'no results found',
+    'could not be generated',
+    'rate limit',
+  ];
+  return thinPhrases.some(phrase => stripped.toLowerCase().includes(phrase));
+}
+
+// Per-section explanation of what the card would show with richer data.
+const THIN_HINTS: Record<string, string> = {
+  'Who Knows What':
+    'With more usage data in _audit, this section maps who created and most frequently uses each object — showing you exactly who to ask about what.',
+  'The Shorthand':
+    'As more macros and lookups are used across saved searches, this section traces where each shorthand appears and why it was created.',
+  "Your Team's Dashboards":
+    'With dashboard panel SPL queries, this section explains exactly what metrics each dashboard tracks.',
+};
+
+const GENERIC_THIN_HINT = 'This section needs more environment data to be fully useful.';
+
+function thinHint(title: string, content: string): string {
+  const lower = content.toLowerCase();
+  // A section that failed to generate (e.g. the AI service was rate-limited)
+  // gets an actionable note rather than a "needs more data" one.
+  if (lower.includes('rate limit') || lower.includes('could not be generated')) {
+    return 'This section will populate when the AI service is available. Try re-exploring.';
+  }
+  return THIN_HINTS[title] ?? GENERIC_THIN_HINT;
+}
+
 interface CardProps {
   index: number;
   section: GuideSection;
@@ -426,6 +467,21 @@ const GuideCard = forwardRef<HTMLDivElement, CardProps>(function GuideCard(
       const term = target.getAttribute('data-term');
       if (term) onChipClick?.(term);
     }
+  }
+
+  // Thin sections degrade to a compact, non-collapsible, muted card that
+  // explains what they'd show with more data — intentionally sparse, not broken.
+  if (isThinSection(section.content || '')) {
+    return (
+      <div ref={ref} data-index={index} className="guide-card guide-card-thin">
+        <div className="guide-card-header">
+          <span className="guide-card-heading">
+            <span className="guide-card-title">{section.title}</span>
+          </span>
+        </div>
+        <p className="thin-hint">{thinHint(section.title, section.content || '')}</p>
+      </div>
+    );
   }
 
   return (

@@ -743,6 +743,29 @@ html, body {
 
 .guide-card-body { padding: 0 18px 24px 16px; }
 
+/* Thin sections: compact, muted, non-collapsible — "I know this is sparse". */
+.guide-card-thin {
+  padding: 12px 16px;
+  border-left: 3px solid var(--text-muted);
+  opacity: 0.7;
+}
+.guide-card-thin .guide-card-header {
+  padding: 0;
+  cursor: default; /* not clickable — no expand/collapse */
+}
+.guide-card-thin .guide-card-title {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.thin-hint {
+  font-family: var(--font-human);
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-top: 6px;
+}
+
 /* ─── Markdown (human voice) ─────────────────────────────────────────────── */
 .guide-card-body, .markdown-body {
   font-family: var(--font-human);
