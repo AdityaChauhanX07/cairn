@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { askQuestion } from '../utils/api';
 import { markdownToHtml } from '../utils/markdown';
+import { SkeletonText } from './Skeleton';
 import type { ChatMessage } from '../types';
 
 const SUGGESTED_QUESTION =
@@ -77,8 +78,8 @@ export default function ChatView({ onChipClick }: Props) {
             ))}
             {loading && (
               <div className="chat-bubble assistant">
-                <div className="bubble-body loading-dots">
-                  <span /><span /><span />
+                <div className="bubble-body skeleton-answer">
+                  <SkeletonText lines={4} />
                 </div>
               </div>
             )}

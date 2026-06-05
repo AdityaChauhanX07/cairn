@@ -6,6 +6,7 @@ import RelationshipGraph from './RelationshipGraph';
 import ChatView from './ChatView';
 import CairnMark from './CairnMark';
 import IndexTiles, { categorize, type IndexTile } from './IndexTiles';
+import { SkeletonGuide, SkeletonText } from './Skeleton';
 import type { Guide, GuideSection, GraphNode, GraphEdge } from '../types';
 
 // Title of the section the index-tile visualization belongs above.
@@ -313,9 +314,7 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
         </div>
       )}
 
-      {!guide && !error && (
-        <div className="guide-loading"><span className="spinner" />Loading guide…</div>
-      )}
+      {!guide && !error && <SkeletonGuide />}
 
       {guide && counts && (
         <div className="guide-layout">
@@ -446,7 +445,11 @@ const GuideCard = forwardRef<HTMLDivElement, CardProps>(function GuideCard(
       {open && (
         <div className="guide-card-body" onClick={handleBodyClick}>
           {topSlot}
-          <div dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content || '') }} />
+          {section.content?.trim() ? (
+            <div dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content) }} />
+          ) : (
+            <SkeletonText lines={5} />
+          )}
         </div>
       )}
     </div>

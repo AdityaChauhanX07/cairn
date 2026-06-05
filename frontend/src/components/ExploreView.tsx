@@ -5,6 +5,7 @@ import type { CairnEnv } from '../utils/env';
 import type { AgentEvent, GraphNode, GraphEdge } from '../types';
 import RelationshipGraph from './RelationshipGraph';
 import CairnMark from './CairnMark';
+import { SkeletonText } from './Skeleton';
 
 interface Props {
   onGuideReady: () => void;
@@ -234,7 +235,7 @@ export default function ExploreView({ onGuideReady }: Props) {
             </div>
             <div className="feed" ref={feedRef}>
               {phase === 'exploring' && events.length === 0 && (
-                <div className="feed-empty"><span className="pulse-dot" />awaiting first signal</div>
+                <div className="feed-skeleton"><SkeletonText lines={5} /></div>
               )}
               {events.map((f, i) => <EventRow key={i} item={f} />)}
               {genEvents.map((f, i) => <EventRow key={`gen-${i}`} item={f} />)}
