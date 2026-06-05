@@ -1158,14 +1158,29 @@ class Orchestrator:
                 )
                 live_queries.append({"type": "saved_search", "name": named_search})
 
+        env = self._curated_env_context()
         prompt_parts = [
             "You are Cairn, an AI assistant that already explored this Splunk "
-            "environment and can answer questions about it. Use the relationship "
-            "graph below as ground truth. Where you reference an artifact, name "
-            "it precisely. If the graph doesn't contain the answer, say so "
-            "explicitly rather than guessing. Write in a warm, direct style — "
-            "you're talking to an engineer who just got paged.\n",
+            "environment and can answer questions about it. Use the environment "
+            "summary and the relationship graph below as ground truth. Where you "
+            "reference an artifact, name it precisely. If the data doesn't "
+            "contain the answer, say so explicitly rather than guessing. Write "
+            "in a warm, direct style — you're talking to an engineer who just "
+            "got paged.\n"
+            "\n"
+            "Guidance:\n"
+            "- ENV_SUMMARY.user_indexes are the business/data indexes an "
+            "engineer actually searches. ENV_SUMMARY.internal_indexes are "
+            "Splunk's own system indexes (the `_*` ones) — never call these the "
+            "'most important' just because they hold the most events.\n"
+            "- When asked which indexes matter, prioritize user indexes that are "
+            "load-bearing — those whose 'referenced_by' lists alerts or saved "
+            "searches — over raw event volume.\n"
+            "- To say what data lives in an index, use its 'sourcetypes' and the "
+            "artifacts in 'referenced_by'. When sourcetypes are named, describe "
+            "the data concretely instead of hedging with 'probably/likely'.\n",
             f"QUESTION: {question}\n",
+            f"ENV_SUMMARY:\n{json.dumps(env, indent=2)[:6000]}",
             f"GRAPH:\n{json.dumps(snapshot, indent=2)[:12000]}",
         ]
         prompt_parts.extend(live_sections)
@@ -1180,6 +1195,64 @@ class Orchestrator:
         if not answer or answer == _RATE_LIMIT_SECTION_FALLBACK or "rate_limit_exceeded" in answer:
             return {"answer": _ASK_UNAVAILABLE_MESSAGE, "live_queries": live_queries}
         return {"answer": answer, "live_queries": live_queries}
+
+    def _curated_env_context(self) -> dict[str, Any]:
+        """Compact, onboarding-oriented view of the environment for Q&A.
+
+        Separates user/business indexes (with sourcetypes, volume, and the
+        artifacts that read them) from Splunk-internal ``_*`` indexes, and
+        lists the knowledge objects by name. This grounds ``ask()`` so the LLM
+        can answer "which indexes matter / what's in them" without inferring
+        purpose from names alone, and without ranking Splunk's own plumbing as
+        "most important" just because it holds more events.
+
+        Read-only graph derivation — does not mutate state, so it can't affect
+        any other mode.
+        """
+        user_indexes: list[dict[str, Any]] = []
+        internal_indexes: list[str] = []
+        for node in self._graph.nodes_by_type(NodeType.INDEX):
+            if node.properties.get("placeholder"):
+                continue
+            if node.name.startswith("_"):
+                internal_indexes.append(node.name)
+                continue
+            sourcetypes = [
+                e.source.split(":", 1)[1] if ":" in e.source else e.source
+                for e in self._graph.in_edges(node.id, EdgeType.SOURCETYPE_OF)
+            ]
+            referenced_by = [
+                e.source.split(":", 1)[1] if ":" in e.source else e.source
+                for e in self._graph.in_edges(node.id, EdgeType.READS_FROM_INDEX)
+            ]
+            user_indexes.append(
+                {
+                    "name": node.name,
+                    "totalEventCount": node.properties.get("totalEventCount"),
+                    "currentDBSizeMB": node.properties.get("currentDBSizeMB"),
+                    "sourcetypes": sourcetypes[:10],
+                    "referenced_by": referenced_by[:10],
+                }
+            )
+
+        def _names(node_type: NodeType) -> list[str]:
+            return [
+                n.name
+                for n in self._graph.nodes_by_type(node_type)
+                if not n.properties.get("placeholder")
+            ]
+
+        return {
+            "user_indexes": user_indexes,
+            "internal_indexes": sorted(internal_indexes),
+            "knowledge_objects": {
+                "alerts": _names(NodeType.ALERT),
+                "saved_searches": _names(NodeType.SAVED_SEARCH),
+                "dashboards": _names(NodeType.DASHBOARD),
+                "macros": _names(NodeType.MACRO),
+                "lookups": _names(NodeType.LOOKUP),
+            },
+        }
 
     def _user_index_summaries(self) -> list[dict[str, Any]]:
         """User-facing indexes with their sourcetypes.

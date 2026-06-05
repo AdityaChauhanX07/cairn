@@ -286,9 +286,13 @@ def _looks_like_alert(obj: dict[str, Any]) -> bool:
             return True
 
     # ---- Field-based signals ----
-    # Primary signal — non-empty/non-"none" alert_type.
+    # ``alert_type`` signals an alert only when it names a *triggering
+    # condition* ("number of events", "number of hosts", "custom", …).
+    # "always" is Splunk's default on every *scheduled* saved search — reports
+    # included — so it carries no alert-vs-report signal and must be ignored;
+    # otherwise every scheduled report gets misclassified as an alert.
     alert_type = obj.get("alert_type")
-    if isinstance(alert_type, str) and alert_type.lower() not in ("", "none"):
+    if isinstance(alert_type, str) and alert_type.lower() not in ("", "none", "always"):
         return True
 
     # ``alert.track`` set to "1"/"true" when alerts are tracked.
@@ -308,16 +312,18 @@ def _looks_like_alert(obj: dict[str, Any]) -> bool:
     if isinstance(suppress, str) and suppress.strip().lower() in ("1", "true"):
         return True
 
-    # ``alert.severity`` — Splunk's effective default on this MCP version is
-    # 1–2, so anything >=3 is an explicit alert configuration. (Non-numeric
-    # but present, non-empty values are also treated as signal.)
+    # ``alert.severity`` — the effective default on this MCP version is 3
+    # (verified against the live deployment: plain scheduled reports report
+    # severity=3), so only an *elevated* severity (>=4) is explicit alert
+    # configuration. Genuine alerts left at the default severity are still
+    # caught by the name-prefix / track / actions / suppress signals above.
     severity = _get_alert_field(obj, "severity")
     if severity is None:
         severity = obj.get("alert_severity")
     if severity is not None:
         sev_str = str(severity).strip()
         if sev_str.isdigit():
-            if int(sev_str) >= 3:
+            if int(sev_str) >= 4:
                 return True
         elif sev_str and sev_str.lower() not in ("default", "none"):
             return True
