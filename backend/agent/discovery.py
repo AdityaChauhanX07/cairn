@@ -185,6 +185,84 @@ _ALLOWED_SAVED_SEARCHES: frozenset[str] = frozenset({
 })
 
 
+# Demo-scoped stubs for allowlisted saved searches the MCP server can fail to
+# return. The Splunk MCP build caps ``get_knowledge_objects`` at 100 items
+# (dropping objects past the alphabetical cutoff) AND its safe-SPL policy blocks
+# the ``| rest`` fallback we use to complete the allowlist — so a handful of our
+# objects can come back empty from BOTH paths. Because these are objects WE
+# create in ``demo-data/setup_splunk.py``, we know their exact shape and
+# synthesize the missing ones (see ``discover_knowledge_objects``). This keeps
+# Mode B able to flag their planted hygiene issues and lets their macro
+# references (``business_hours_only`` / ``exclude_internal_traffic``) resolve
+# instead of looking orphaned. Two fields beyond the literal demo definitions:
+#   - ``owner`` mirrors what the setup script's ACL step assigns ("admin"), so a
+#     stubbed alert doesn't trip a spurious Mode B "no owner" finding.
+#   - ``alert.track="1"`` on the two real alerts — Mode B only audits *tracked*
+#     alerts, so without it the empty-index / no-action landmines never surface.
+_KNOWN_STUBS: dict[str, dict[str, Any]] = {
+    "Legacy Windows Event Monitor": {
+        "name": "Legacy Windows Event Monitor",
+        "search": "index=legacy_winlogs sourcetype=WinEventLog | stats count by host, EventCode",
+        "app": "search",
+        "owner": "admin",
+        "alert_type": "always",
+        "alert.severity": "3",
+        "alert.track": "1",
+        "actions": "email",
+        "cron_schedule": "*/5 * * * *",
+        "disabled": "0",
+    },
+    "Warning: Low Disk Space": {
+        "name": "Warning: Low Disk Space",
+        "search": "index=app_metrics disk_usage_pct>90 | stats max(disk_usage_pct) as max_usage by host",
+        "app": "search",
+        "owner": "admin",
+        "alert_type": "always",
+        "alert.severity": "3",
+        "alert.track": "1",
+        "actions": "",  # deliberately no action — this is the landmine
+        "cron_schedule": "*/15 * * * *",
+        "disabled": "0",
+    },
+    "Unusual After-Hours Access": {
+        "name": "Unusual After-Hours Access",
+        "search": "index=auth_events (date_hour<6 OR date_hour>22) NOT `exclude_internal_traffic` | stats count by user, src_ip, app | sort -count",
+        "app": "search",
+        "owner": "admin",
+        "cron_schedule": "0 6 * * *",
+        "disabled": "0",
+    },
+    "Top 10 Error Codes Last 24h": {
+        "name": "Top 10 Error Codes Last 24h",
+        "search": 'index=web_logs status>=400 | top 10 status | eval description=case(status=400, "Bad Request", status=401, "Unauthorized", status=403, "Forbidden", status=404, "Not Found", status=500, "Internal Server Error", 1=1, "Other")',
+        "app": "search",
+        "owner": "admin",
+        "cron_schedule": "0 */4 * * *",
+        "disabled": "0",
+    },
+    "Slow API Response Times": {
+        "name": "Slow API Response Times",
+        "search": "index=app_metrics response_time>2000 | stats avg(response_time) as avg_response_time, max(response_time) as max_response_time, count by endpoint, service | sort -avg_response_time",
+        "app": "search",
+        "owner": "admin",
+        "cron_schedule": "0 * * * *",
+        "disabled": "0",
+    },
+    "Warning: API Latency Above Threshold": {
+        "name": "Warning: API Latency Above Threshold",
+        "search": "index=app_metrics `business_hours_only` response_time>3000 | stats avg(response_time) as avg_latency, count by service, endpoint | where avg_latency > 3000",
+        "app": "search",
+        "owner": "admin",
+        "alert_type": "always",
+        "alert.severity": "3",
+        "alert.track": "1",
+        "actions": "email",
+        "cron_schedule": "*/15 * * * *",
+        "disabled": "0",
+    },
+}
+
+
 def _is_system_lookup(obj: dict[str, Any]) -> bool:
     name = _first(obj, _NAME_KEYS)
     if not isinstance(name, str):
@@ -595,6 +673,33 @@ class DiscoveryEngine:
                             f"(full fields); total now {len(objects)}"
                         ),
                         data={"rest_complete": len(rest_names), "total": len(objects)},
+                    )
+
+                # ---- Synthesize any allowlisted saved searches still missing ----
+                # Last resort for the MCP pagination cap: if an allowlisted object
+                # came back from neither MCP nor the REST-by-name merge above, fall
+                # back to a known-good stub (see ``_KNOWN_STUBS``). These run through
+                # the same processor/filter below, so a stubbed alert is typed,
+                # graphed, and audited exactly like a discovered one — which is what
+                # lets Mode B flag its planted issues and its macro refs resolve.
+                found_names = {
+                    n for o in objects if isinstance((n := _first(o, _NAME_KEYS)), str)
+                }
+                injected: list[str] = []
+                for stub_name, stub_data in _KNOWN_STUBS.items():
+                    if stub_name in _ALLOWED_SAVED_SEARCHES and stub_name not in found_names:
+                        objects.append(dict(stub_data))
+                        injected.append(stub_name)
+                        logger.info("injected stub for missing saved search: %s", stub_name)
+                if injected:
+                    yield Finding(
+                        kind="saved_searches",
+                        message=(
+                            f"synthesized {len(injected)} allowlisted saved search(es) the "
+                            f"MCP server didn't return (pagination workaround)"
+                        ),
+                        detail=", ".join(sorted(injected)),
+                        data={"injected": sorted(injected)},
                     )
 
             count = 0
