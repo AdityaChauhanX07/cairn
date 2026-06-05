@@ -1,8 +1,11 @@
 import type { AgentEvent, Guide, GraphData, AskResponse } from '../types';
+import { parseDeploymentInfo } from './env';
 
 const BASE = 'http://localhost:8000/api';
 
-export async function connect(splunkUrl: string, token: string): Promise<void> {
+// Resolves with the detected Splunk version (when the deployment reports one)
+// so the connect form can confirm exactly what it validated against.
+export async function connect(splunkUrl: string, token: string): Promise<{ version?: string }> {
   const res = await fetch(`${BASE}/connect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -12,6 +15,11 @@ export async function connect(splunkUrl: string, token: string): Promise<void> {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error((err as { detail?: string }).detail ?? res.statusText);
   }
+  const data = (await res.json().catch(() => ({}))) as {
+    deployment?: Record<string, unknown> | null;
+  };
+  const env = data.deployment ? parseDeploymentInfo(data.deployment) : {};
+  return { version: env.version };
 }
 
 // Shared SSE streaming — used by both explore and generate.

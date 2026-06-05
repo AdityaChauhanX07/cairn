@@ -9,26 +9,34 @@ interface Props {
   onConnected: () => void;
 }
 
+type TestStatus = 'idle' | 'testing' | 'success' | 'error';
+
 export default function ConnectForm({ onConnected }: Props) {
   const [splunkUrl, setSplunkUrl] = useState(
     () => localStorage.getItem(STORAGE_KEY) ?? DEFAULT_URL
   );
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<TestStatus>('idle');
+  const [version, setVersion] = useState<string | undefined>();
 
+  // "Connect" implicitly tests the MCP connection first: validate, then hold on
+  // a brief verified-success state before handing off to the explore screen.
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-    setLoading(true);
+    setStatus('testing');
     try {
       localStorage.setItem(STORAGE_KEY, splunkUrl);
-      await connect(splunkUrl, token);
-      onConnected();
+      const { version: detected } = await connect(splunkUrl, token);
+      setVersion(detected);
+      setStatus('success');
+      // The pause is intentional — it lets the user register that the
+      // connection was actually verified before the screen changes.
+      setTimeout(onConnected, 1000);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
+      setStatus('error');
     }
   }
 
@@ -74,26 +82,27 @@ export default function ConnectForm({ onConnected }: Props) {
           />
         </div>
 
-        {error && (
-          <div className="error-banner">
-            <span className="error-icon">⚠</span>
-            <span>
-              <span className="error-title">Couldn't connect</span>
-              <span className="error-hint">
-                {error} — double-check the MCP URL and that your auth token is valid.
-              </span>
-            </span>
+        {status === 'success' ? (
+          <div className="connect-status connect-status-success">
+            <span className="connect-status-dot" />
+            {version ? `Connected to Splunk ${version}` : 'Connected'}
           </div>
+        ) : (
+          <button
+            className="btn btn-primary btn-full"
+            type="submit"
+            disabled={status === 'testing' || !splunkUrl || !token}
+          >
+            {status === 'testing' ? <span className="spinner" /> : null}
+            {status === 'testing' ? 'Connecting…' : 'Connect'}
+          </button>
         )}
 
-        <button
-          className="btn btn-primary btn-full"
-          type="submit"
-          disabled={loading || !splunkUrl || !token}
-        >
-          {loading ? <span className="spinner" /> : null}
-          {loading ? 'Connecting…' : 'Connect'}
-        </button>
+        {status === 'error' && error && (
+          <div className="connect-status connect-status-error">
+            {error} — double-check the MCP URL and that your auth token is valid.
+          </div>
+        )}
       </form>
       </div>
     </>

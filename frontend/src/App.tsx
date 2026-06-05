@@ -16,6 +16,10 @@ export default function App() {
   }
 
   function handleReExplore() {
+    if (!window.confirm('Re-explore will generate a new guide. Continue?')) return;
+    // Switching state unmounts GuideView and remounts a fresh ExploreView, so
+    // the old guide + graph state is discarded — ExploreView starts back at its
+    // idle "Explore" screen, ready for a fresh run.
     setAppState('explore');
   }
 
