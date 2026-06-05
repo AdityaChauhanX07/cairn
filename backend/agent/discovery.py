@@ -180,6 +180,8 @@ _ALLOWED_SAVED_SEARCHES: frozenset[str] = frozenset({
     # Mode B hygiene landmines.
     "Legacy Windows Event Monitor",
     "Warning: Low Disk Space",
+    # Future landmine — harmless to allowlist before the demo data plants it.
+    "OLD - Quarterly VPN Report v2",
 })
 
 

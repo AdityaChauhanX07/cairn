@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover — older groq versions
 from config import Settings, get_settings
 from mcp_client import SplunkMCPClient, SplunkMCPError
 
-from .discovery import DiscoveryEngine, Finding
+from .discovery import _ALLOWED_LOOKUPS, _ALLOWED_MACROS, DiscoveryEngine, Finding
 from .findings import (
     CATEGORY_ALERT_EMPTY_INDEX,
     CATEGORY_ALERT_NO_ACTION,
@@ -58,6 +58,18 @@ from .graph import EdgeType, NodeType, RelationshipGraph, SPLParser
 from .starter_kit import DashboardPanel, GeneratedSPL, Runbook, StarterKit
 
 logger = logging.getLogger(__name__)
+
+
+# Deliberately-planted Mode B landmines — these objects genuinely have no
+# referrers and SHOULD surface as orphans. An object with zero incoming edges
+# that is *not* in this set but *is* in our discovery allowlists is almost
+# certainly a false positive from the MCP 100-item cap (its referrer never got
+# discovered), so we suppress it. (See ``_run_generate_findings`` orphan scan.)
+_EXPECTED_ORPHANS: frozenset[str] = frozenset({
+    "deprecated_geoip_filter",  # orphaned macro (landmine)
+    "service_owners.csv",       # orphaned lookup (landmine)
+    "service_owners",           # same, without the file extension
+})
 
 
 # User-facing fallbacks shown when the LLM can't be reached (e.g. Groq's
@@ -781,11 +793,24 @@ class Orchestrator:
 
         # ---- 1. Orphaned macros / lookups (zero incoming references) ----
         yield AgentEvent(AgentPhase.SYNTHESIZE, "scanning for orphaned objects...")
-        for node_type, label in ((NodeType.MACRO, "macro"), (NodeType.LOOKUP, "lookup")):
+        for node_type, label, allowlist in (
+            (NodeType.MACRO, "macro", _ALLOWED_MACROS),
+            (NodeType.LOOKUP, "lookup", _ALLOWED_LOOKUPS),
+        ):
             for node in self._graph.nodes_by_type(node_type):
                 if node.properties.get("placeholder"):
                     continue
                 if self._graph.in_edges(node.id):
+                    continue
+                # Zero incoming edges. That's a *real* orphan only if it's a
+                # deliberately-planted landmine, or something we never
+                # allowlisted (genuine junk in a production environment). An
+                # allowlisted-but-not-planted object with no refs is almost
+                # certainly a victim of the MCP 100-item cap — its referrer
+                # (e.g. "Warning: API Latency Above Threshold" for
+                # business_hours_only) sits past the pagination cutoff and never
+                # got discovered. Suppress those to avoid false positives.
+                if node.name not in _EXPECTED_ORPHANS and node.name in allowlist:
                     continue
                 report.findings.append(
                     HygieneFinding(
