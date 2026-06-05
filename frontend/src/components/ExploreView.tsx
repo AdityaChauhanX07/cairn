@@ -4,6 +4,7 @@ import { parseDeploymentInfo, connectedHost, saveEnv, envSummaryLine } from '../
 import type { CairnEnv } from '../utils/env';
 import type { AgentEvent, GraphNode, GraphEdge } from '../types';
 import RelationshipGraph from './RelationshipGraph';
+import CairnMark from './CairnMark';
 
 interface Props {
   onGuideReady: () => void;
@@ -185,10 +186,28 @@ export default function ExploreView({ onGuideReady }: Props) {
   const live = phase === 'exploring' || phase === 'generating';
   const started = phase !== 'idle';
 
+  // Stones light up as the agentic loop advances: each phase seen stacks one
+  // more stone (orient→1 … synthesize→4). Once exploration completes the cairn
+  // stays fully stacked through guide generation.
+  const cairnStacked =
+    phase === 'idle'
+      ? 0
+      : phase === 'explored' || phase === 'generating' || phase === 'done'
+        ? 4
+        : Math.min(4, Math.max(0, maxSeen + 1));
+
   return (
     <div className="explore-container">
       <header className="app-header">
-        <span className="brand">cairn</span>
+        <div className="brand">
+          <CairnMark
+            stacked={cairnStacked}
+            size={24}
+            className={phase === 'generating' ? 'cairn-pulsing' : undefined}
+          />
+          <span className="brand-text">cairn</span>
+          <span className="brand-dot">.</span>
+        </div>
         {envLine && (
           <span className="header-env"><span className="env-dot" />{envLine}</span>
         )}

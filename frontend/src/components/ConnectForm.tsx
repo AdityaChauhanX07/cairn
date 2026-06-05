@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { connect } from '../utils/api';
+import CairnMark from './CairnMark';
 
 const STORAGE_KEY = 'cairn_splunk_url';
 const DEFAULT_URL = 'https://localhost:8089/services/mcp';
@@ -34,7 +35,11 @@ export default function ConnectForm({ onConnected }: Props) {
   return (
     <>
       <div className="connect-logo">
-        <span className="brand">cairn</span>
+        <CairnMark stacked={0} size={64} />
+        <div className="brand">
+          <span className="brand-text">cairn</span>
+          <span className="brand-dot">.</span>
+        </div>
       </div>
       <p className="connect-tagline">
         Point it at a Splunk instance. It maps the place and writes the guide.

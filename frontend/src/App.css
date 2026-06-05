@@ -77,17 +77,33 @@ html, body {
   overflow-y: auto;
 }
 
-/* ─── Brand mark: "cairn." ───────────────────────────────────────────────── */
+/* ─── Brand mark: stacked-stone cairn + "cairn." ─────────────────────────── */
 .brand {
-  font-family: var(--font-human);
-  font-weight: 600;
-  letter-spacing: -0.5px;
-  color: var(--text-primary);
-  font-size: 18px;
-  line-height: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   user-select: none;
 }
-.brand::after { content: '.'; color: var(--accent-amber); }
+.brand-text {
+  font-family: var(--font-human);
+  font-weight: 600;
+  font-size: 1.1rem;
+  letter-spacing: -0.5px;
+  color: var(--text-primary);
+  line-height: 1;
+}
+.brand-dot {
+  color: var(--accent-amber);
+  font-weight: 600;
+  margin-left: -8px; /* tuck the period flush against the wordmark (cancels flex gap) */
+}
+
+/* Gentle breathing while the guide is being built. */
+.cairn-pulsing { animation: cairnPulse 2s ease-in-out infinite; }
+@keyframes cairnPulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
 
 /* ─── Top bar — minimal: brand left, env right ───────────────────────────── */
 .app-header {
@@ -120,8 +136,15 @@ html, body {
 .header-env + .header-actions { margin-left: 16px; }
 
 /* ─── Connect (Trailhead) ────────────────────────────────────────────────── */
-.connect-logo { margin-bottom: 14px; }
-.connect-logo .brand { font-size: 40px; letter-spacing: -1.5px; }
+.connect-logo {
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.connect-logo .brand-text { font-size: 40px; letter-spacing: -1.5px; }
+.connect-logo .brand-dot { margin-left: -10px; }
 
 .connect-tagline {
   color: var(--text-secondary);

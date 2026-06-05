@@ -4,6 +4,7 @@ import { markdownToHtml } from '../utils/markdown';
 import { loadEnv, envSummaryLine } from '../utils/env';
 import RelationshipGraph from './RelationshipGraph';
 import ChatView from './ChatView';
+import CairnMark from './CairnMark';
 import IndexTiles, { categorize, type IndexTile } from './IndexTiles';
 import type { Guide, GuideSection, GraphNode, GraphEdge } from '../types';
 
@@ -277,7 +278,11 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
   return (
     <div className="guide-container">
       <header className="app-header">
-        <span className="brand">cairn</span>
+        <div className="brand">
+          <CairnMark stacked={4} size={24} />
+          <span className="brand-text">cairn</span>
+          <span className="brand-dot">.</span>
+        </div>
         {(envLine || counts) && (
           <span className="header-env">
             <span className="env-dot" />
