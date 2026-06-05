@@ -1,7 +1,7 @@
-import type { AgentEvent, Guide, GraphData, AskResponse, StarterKit } from '../types';
+import type { AgentEvent, Guide, GraphData, AskResponse, StarterKit, FindingsReport } from '../types';
 import { parseDeploymentInfo } from './env';
 
-const BASE = 'http://localhost:8000/api';
+const BASE = (import.meta.env.VITE_API_BASE as string) || 'http://localhost:8000/api';
 
 // Resolves with the detected Splunk version (when the deployment reports one)
 // so the connect form can confirm exactly what it validated against.
@@ -136,6 +136,22 @@ export async function getStarterKit(): Promise<StarterKit> {
   const res = await fetch(`${BASE}/starter-kit/data`);
   if (!res.ok) throw new Error(`Failed to load starter kit: ${res.statusText}`);
   return res.json() as Promise<StarterKit>;
+}
+
+// Stream Mode B findings generation. ``onError`` is optional so callers that
+// only care about progress + completion can omit it.
+export function generateFindingsSSE(
+  onEvent: (event: AgentEvent) => void,
+  onDone: () => void,
+  onError?: (err: string) => void
+): () => void {
+  return streamSSE(`${BASE}/findings`, onEvent, onDone, onError ?? (() => {}));
+}
+
+export async function getFindings(): Promise<FindingsReport> {
+  const res = await fetch(`${BASE}/findings/data`);
+  if (!res.ok) throw new Error(`Failed to load findings: ${res.statusText}`);
+  return res.json() as Promise<FindingsReport>;
 }
 
 // Fetch the generated Simple XML and trigger a real browser download.

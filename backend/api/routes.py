@@ -61,6 +61,7 @@ def _current_session(
     require_explored: bool = False,
     require_guide: bool = False,
     require_starter_kit: bool = False,
+    require_findings: bool = False,
 ) -> _Session:
     """Return the live session, validating prerequisite state.
 
@@ -85,6 +86,11 @@ def _current_session(
         raise HTTPException(
             status_code=400,
             detail="no starter kit yet — open GET /api/starter-kit (SSE) first",
+        )
+    if require_findings and _session.orchestrator.findings is None:
+        raise HTTPException(
+            status_code=400,
+            detail="no findings yet — open GET /api/findings (SSE) first",
         )
     return _session
 
@@ -306,6 +312,35 @@ async def get_starter_kit_dashboard_xml() -> Response:
         media_type="application/xml; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="cairn-starter-dashboard.xml"'},
     )
+
+
+@router.get("/findings")
+async def findings_stream() -> EventSourceResponse:
+    """Stream Mode B hygiene-findings generation as Server-Sent Events.
+
+    Runs ``Orchestrator.generate_findings()`` — orphaned objects, alerts on
+    empty indexes, alerts with no action / no owner, each with a remediation.
+    Each event's ``event`` field is the phase name; ``data`` is the serialized
+    ``AgentEvent``. When the stream closes, findings are available via
+    ``GET /api/findings/data``.
+    """
+    session = _current_session(require_explored=True)
+
+    async def event_stream() -> AsyncIterator[dict[str, Any]]:
+        async for event in session.orchestrator.generate_findings():
+            yield {
+                "event": event.phase.value,
+                "data": json.dumps(event.to_dict()),
+            }
+
+    return EventSourceResponse(event_stream())
+
+
+@router.get("/findings/data")
+async def get_findings() -> dict[str, Any]:
+    """Return the generated Mode B findings report as JSON."""
+    session = _current_session(require_explored=True, require_findings=True)
+    return session.orchestrator.findings.to_dict()  # type: ignore[union-attr]
 
 
 @router.post("/ask", response_model=AskResponse)

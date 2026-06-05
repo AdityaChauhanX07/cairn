@@ -99,4 +99,29 @@ export interface StarterKit {
   dashboard_xml: string;
 }
 
+// ── Findings (Mode B — Flag) ─────────────────────────────────────────────────
+// Mirrors FindingsReport.to_dict() on the backend.
+export interface Finding {
+  id: string;
+  category:
+    | 'orphaned_object'
+    | 'alert_empty_index'
+    | 'alert_no_action'
+    | 'alert_no_owner'
+    | string;
+  severity: 'high' | 'medium' | 'low' | string;
+  title: string;
+  summary: string;
+  evidence: Record<string, unknown>;
+  affected_node_id: string;
+  fix: string;
+  fix_spl: string;
+}
+
+export interface FindingsReport {
+  findings: Finding[];
+  dead_node_ids: string[];
+  counts: Record<string, number>;
+}
+
 export type AppState = 'connect' | 'explore' | 'guide' | 'qa';

@@ -1192,6 +1192,18 @@ html, body {
 .guide-nav-label-amber { color: var(--accent-amber); opacity: 0.9; }
 .guide-nav-item:disabled { opacity: 0.4; cursor: default; }
 
+/* ── Findings (Mode B) ── */
+.findings-summary {
+  font-family: var(--font-machine);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin: 4px 0 18px;
+}
+.graph-node-dead { cursor: pointer; }
+.graph-node-dead .graph-node-label { fill: var(--accent-red); }
+
 /* Header + intro */
 .starter-kit-head { margin-bottom: 28px; }
 .starter-back {

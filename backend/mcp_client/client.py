@@ -25,7 +25,8 @@ import re
 import warnings
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
+from urllib.parse import quote, urlsplit
 
 import httpx
 from mcp import ClientSession
@@ -450,13 +451,82 @@ class SplunkMCPClient:
         # count=200 — explicit upper bound, not count=0. Some Splunk versions
         # interpret 0 as "use the endpoint default" (which is 30) rather than
         # "unlimited", so an explicit number is more portable.
+        # ``/servicesNS/-/-/`` wildcards user+app so the listing is context-free:
+        # a plain ``/services/saved/searches`` only returns the *current* app's
+        # objects (0 in the MCP server's run context), which silently breaks the
+        # merge. The ``-/-`` namespace returns every saved search the token can see.
         spl = (
-            "| rest /services/saved/searches splunk_server=local count=200 "
+            "| rest /servicesNS/-/-/saved/searches count=1000 "
             "| table title search \"eai:acl.app\" \"eai:acl.owner\" "
             "alert_type \"alert.severity\" \"alert.track\" actions "
             "cron_schedule disabled"
         )
         return await self.run_query(spl, earliest="0")
+
+    async def get_saved_searches_by_name(
+        self, names: Iterable[str]
+    ) -> list[dict[str, Any]]:
+        """Fetch specific saved searches by name via the splunkd REST API.
+
+        The Splunk MCP server caps ``get_knowledge_objects`` at 100 items and
+        blocks ``| rest`` (not in its ``safe_spl_commands``), so saved searches
+        past the alphabetical cutoff are unreachable through MCP. This reads the
+        named objects directly from the management REST API — a read-only GET
+        using the same bearer token — and returns REST-shaped rows (``title``,
+        ``eai:acl.app``/``owner``, ``search``, ``actions``, …) so the discovery
+        processors handle them exactly like the ``| rest`` merge rows.
+        """
+        names = [n for n in names if n]
+        if not names:
+            return []
+
+        parts = urlsplit(self._url)
+        base = f"{parts.scheme}://{parts.netloc}"
+        headers = (
+            {"Authorization": f"Bearer {self._token}"} if self._token else {}
+        )
+
+        rows: list[dict[str, Any]] = []
+        async with _make_insecure_http_client(headers=headers) as http:
+            for name in names:
+                url = (
+                    f"{base}/servicesNS/-/-/saved/searches/"
+                    f"{quote(name, safe='')}?output_mode=json"
+                )
+                try:
+                    resp = await http.get(url)
+                except httpx.HTTPError as exc:
+                    logger.warning("REST fetch of saved search %r failed: %s", name, exc)
+                    continue
+                if resp.status_code != 200:
+                    logger.warning(
+                        "REST fetch of saved search %r returned HTTP %s",
+                        name,
+                        resp.status_code,
+                    )
+                    continue
+                entries = resp.json().get("entry") or []
+                if not entries:
+                    continue
+                entry = entries[0]
+                content = entry.get("content", {})
+                acl = entry.get("acl", {})
+                rows.append(
+                    {
+                        "title": entry.get("name"),
+                        "search": content.get("search"),
+                        "eai:acl.app": acl.get("app"),
+                        "eai:acl.owner": acl.get("owner"),
+                        "alert_type": content.get("alert_type"),
+                        "alert.severity": content.get("alert.severity"),
+                        "alert.track": content.get("alert.track"),
+                        "actions": content.get("actions"),
+                        "cron_schedule": content.get("cron_schedule"),
+                        "is_scheduled": content.get("is_scheduled"),
+                        "disabled": content.get("disabled"),
+                    }
+                )
+        return rows
 
     async def get_user_list(self) -> list[dict[str, Any]]:
         """List all Splunk users."""

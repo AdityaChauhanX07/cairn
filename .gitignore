@@ -97,3 +97,17 @@ logs/
 *.sqlite3
 generated_guides/
 .cairn_cache/
+
+# ---- Personal / local-only (NOT needed by the teammate) ----
+# Local launcher with my paths/ports/Splunk password.
+/run.sh
+/stop.sh
+# Per-developer Claude Code permissions (a shared .claude/settings.json, if
+# any, still tracks; only the *.local override is personal).
+.claude/settings.local.json
+# Local env / port overrides (also matched above; listed here for clarity).
+.env
+frontend/.env.local
+# Machine-specific Splunk artifacts.
+*.tgz
+.splunk_token

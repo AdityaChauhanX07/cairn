@@ -148,6 +148,8 @@ _ALLOWED_MACROS: frozenset[str] = frozenset({
     "high_severity_filter",
     "business_hours_only",
     "exclude_internal_traffic",
+    # Mode B orphan-macro landmine (referenced by nothing).
+    "deprecated_geoip_filter",
 })
 
 _ALLOWED_LOOKUPS: frozenset[str] = frozenset({
@@ -175,6 +177,9 @@ _ALLOWED_SAVED_SEARCHES: frozenset[str] = frozenset({
     "Critical: Multiple Failed Logins from Same IP",
     "Warning: API Latency Above Threshold",
     "Critical: Firewall Rule Violations",
+    # Mode B hygiene landmines.
+    "Legacy Windows Event Monitor",
+    "Warning: Low Disk Space",
 })
 
 
@@ -544,55 +549,44 @@ class DiscoveryEngine:
                 )
                 continue
 
-            # ---- 100-cap merge for saved_searches ----
-            # The current Splunk MCP server build silently caps
-            # splunk_get_knowledge_objects at 100 items, dropping user-created
-            # entries past the alphabetical cutoff (e.g. "Slow API Response
-            # Times", "Top 10 Error Codes...", "Unusual After-Hours Access").
-            # Rather than swap MCP results for REST results — both can return
-            # ~100 entries but of different objects — we MERGE the two sets
-            # by name. Any REST row whose name isn't already in the MCP set
-            # is appended.
-            if kind == "saved_searches" and len(objects) >= 100:
-                yield Finding(
-                    kind="saved_searches",
-                    message=(
-                        f"saved_searches hit the 100-item MCP cap "
-                        f"({len(objects)} returned); merging with | rest results"
-                    ),
-                )
+            # ---- Complete saved_searches via REST-by-name ----
+            # The Splunk MCP server (a) caps get_knowledge_objects at 100 items,
+            # dropping user objects past the alphabetical cutoff, AND (b) returns
+            # a thin object shape that omits fields Mode B needs — notably
+            # ``actions`` and the owner. Since the demo objects we reason about
+            # are a known allowlist, fetch the whole allowlist directly by name
+            # via the management REST API (``| rest`` is blocked by the server's
+            # safe-SPL policy) and PREFER those complete rows over the thin MCP
+            # ones. Read-only GET with the same token.
+            if kind == "saved_searches":
                 try:
-                    rest_response = await self._client.get_all_saved_searches()
-                    rest_rows = _extract_rows(rest_response)
-                except SplunkMCPError as exc:
+                    rest_rows = await self._client.get_saved_searches_by_name(
+                        _ALLOWED_SAVED_SEARCHES
+                    )
+                except Exception as exc:  # defensive — keep MCP results on failure
+                    rest_rows = []
                     yield Finding(
                         kind="error",
-                        message="REST merge for saved_searches failed; using MCP results only",
+                        message="REST fetch of allowlisted saved searches failed; using MCP results",
                         detail=str(exc),
                     )
-                else:
-                    # Dedup by name. _first(obj, _NAME_KEYS) handles both
-                    # "name" (MCP shape) and "title" (REST shape) uniformly.
-                    seen: set[str] = set()
-                    for obj in objects:
-                        n = _first(obj, _NAME_KEYS)
-                        if isinstance(n, str):
-                            seen.add(n)
-                    added = 0
-                    for rest_obj in rest_rows:
-                        rest_name = _first(rest_obj, _NAME_KEYS)
-                        if not isinstance(rest_name, str) or rest_name in seen:
-                            continue
-                        objects.append(rest_obj)
-                        seen.add(rest_name)
-                        added += 1
+                if rest_rows:
+                    rest_names = {
+                        n
+                        for r in rest_rows
+                        if isinstance((n := _first(r, _NAME_KEYS)), str)
+                    }
+                    # Complete REST rows first, then any MCP rows REST didn't supply.
+                    objects = rest_rows + [
+                        o for o in objects if _first(o, _NAME_KEYS) not in rest_names
+                    ]
                     yield Finding(
                         kind="saved_searches",
                         message=(
-                            f"REST merge added {added} saved searches not in the MCP set "
-                            f"(REST returned {len(rest_rows)}, merged total {len(objects)})"
+                            f"completed {len(rest_names)} allowlisted saved searches via REST "
+                            f"(full fields); total now {len(objects)}"
                         ),
-                        data={"rest_total": len(rest_rows), "added": added, "merged_total": len(objects)},
+                        data={"rest_complete": len(rest_names), "total": len(objects)},
                     )
 
             count = 0
@@ -862,6 +856,12 @@ def _process_saved_search(
         "is_scheduled": obj.get("is_scheduled"),
         "alert_type": obj.get("alert_type"),
         "alert_severity": obj.get("alert.severity"),
+        # Configured alert actions (e.g. "email,webhook"). Empty/missing => the
+        # alert fires into the void — surfaced by the Mode B "no action" finding.
+        "actions": _first(obj, ("actions", "alert.actions")),
+        # ``alert.track`` distinguishes a real (tracked) alert from a scheduled
+        # report. Mode B only flags hygiene issues on tracked alerts.
+        "alert_track": _get_alert_field(obj, "track"),
         "placeholder": False,
     }
     node = engine._graph.add_node(node_type, name, props)

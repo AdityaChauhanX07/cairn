@@ -43,6 +43,17 @@ from config import Settings, get_settings
 from mcp_client import SplunkMCPClient, SplunkMCPError
 
 from .discovery import DiscoveryEngine, Finding
+from .findings import (
+    CATEGORY_ALERT_EMPTY_INDEX,
+    CATEGORY_ALERT_NO_ACTION,
+    CATEGORY_ALERT_NO_OWNER,
+    CATEGORY_ORPHAN,
+    SEV_HIGH,
+    SEV_LOW,
+    SEV_MEDIUM,
+    FindingsReport,
+)
+from .findings import Finding as HygieneFinding
 from .graph import EdgeType, NodeType, RelationshipGraph, SPLParser
 from .starter_kit import DashboardPanel, GeneratedSPL, Runbook, StarterKit
 
@@ -178,6 +189,7 @@ class Orchestrator:
         )
         self._guide: OnboardingGuide | None = None
         self._starter_kit: StarterKit | None = None
+        self._findings: FindingsReport | None = None
         self._lock = asyncio.Lock()
 
     # ---- public accessors ----
@@ -193,6 +205,10 @@ class Orchestrator:
     @property
     def starter_kit(self) -> StarterKit | None:
         return self._starter_kit
+
+    @property
+    def findings(self) -> FindingsReport | None:
+        return self._findings
 
     # ---- LLM call helper ----
 
@@ -714,6 +730,179 @@ class Orchestrator:
                 "runbook_count": len(kit.runbooks),
                 "panel_count": len(kit.dashboard_panels),
             },
+        )
+
+    # ---- Mode B: environment-hygiene findings (Flag) ----
+
+    async def generate_findings(self) -> AsyncIterator[AgentEvent]:
+        """Derive Mode B hygiene findings from the discovered graph.
+
+        Wraps ``_run_generate_findings`` with the orchestrator lock and a crash
+        guard, matching ``explore`` / ``generate_guide`` / ``generate_starter_kit``.
+        """
+        async with self._lock:
+            try:
+                async for event in self._run_generate_findings():
+                    yield event
+            except Exception as exc:
+                logger.exception("findings generation crashed")
+                yield AgentEvent(
+                    phase=AgentPhase.ERROR,
+                    message="findings generation failed",
+                    detail=str(exc),
+                )
+
+    def _reachable_indexes(self, start_node_id: str) -> list[Any]:
+        """All INDEX nodes reachable from ``start_node_id`` by following out-edges.
+
+        Walks alert -> saved search / macro / lookup -> index so an alert whose
+        index reference lives inside a macro still resolves to the real index.
+        """
+        seen: set[str] = set()
+        indexes: list[Any] = []
+        stack = [start_node_id]
+        while stack:
+            nid = stack.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            for edge in self._graph.out_edges(nid):
+                target = self._graph.get_node(edge.target)
+                if target is None:
+                    continue
+                if target.type == NodeType.INDEX and target.id not in seen:
+                    indexes.append(target)
+                stack.append(edge.target)
+        return indexes
+
+    async def _run_generate_findings(self) -> AsyncIterator[AgentEvent]:
+        report = FindingsReport()
+        dead: list[str] = []
+
+        # ---- 1. Orphaned macros / lookups (zero incoming references) ----
+        yield AgentEvent(AgentPhase.SYNTHESIZE, "scanning for orphaned objects...")
+        for node_type, label in ((NodeType.MACRO, "macro"), (NodeType.LOOKUP, "lookup")):
+            for node in self._graph.nodes_by_type(node_type):
+                if node.properties.get("placeholder"):
+                    continue
+                if self._graph.in_edges(node.id):
+                    continue
+                report.findings.append(
+                    HygieneFinding(
+                        id=f"orphan:{label}:{node.name}",
+                        category=CATEGORY_ORPHAN,
+                        severity=SEV_LOW,
+                        title=f"Orphaned {label}: {node.name}",
+                        summary=(
+                            f"The {label} '{node.name}' is not referenced by any saved "
+                            f"search, alert, or dashboard — it's dead weight."
+                        ),
+                        evidence={"object_type": label, "name": node.name, "incoming_refs": 0},
+                        affected_node_id=node.id,
+                        fix=(
+                            f"No SPL references this {label}. Safe to retire "
+                            f"(archive it first) after confirming nothing outside Splunk "
+                            f"depends on it."
+                        ),
+                    )
+                )
+                dead.append(node.id)
+
+        # ---- 2. Alerts: empty index / no action / no owner ----
+        yield AgentEvent(AgentPhase.SYNTHESIZE, "auditing alerts for hygiene issues...")
+        for alert in self._graph.nodes_by_type(NodeType.ALERT):
+            name = alert.name
+
+            # Only flag hygiene on *tracked* alerts. Scheduled reports surface as
+            # alert nodes too (non-empty alert_type), but having no action / no
+            # owner is normal for a report — flagging them would be noise.
+            track = alert.properties.get("alert_track")
+            is_tracked = track is True or (
+                isinstance(track, str) and track.strip().lower() in ("1", "true")
+            )
+            if not is_tracked:
+                continue
+
+            # 2a. Alert on an empty index.
+            for index_node in self._reachable_indexes(alert.id):
+                if index_node.name.startswith("_"):
+                    continue
+                event_count = index_node.properties.get("totalEventCount")
+                if event_count is None or int(event_count) != 0:
+                    continue
+                report.findings.append(
+                    HygieneFinding(
+                        id=f"empty_index:{name}:{index_node.name}",
+                        category=CATEGORY_ALERT_EMPTY_INDEX,
+                        severity=SEV_HIGH,
+                        title=f"Alert on empty index: {name}",
+                        summary=(
+                            f"Alert '{name}' reads from index '{index_node.name}', "
+                            f"which currently holds 0 events — it can never fire."
+                        ),
+                        evidence={
+                            "alert": name,
+                            "index": index_node.name,
+                            "totalEventCount": 0,
+                        },
+                        affected_node_id=index_node.id,
+                        fix=(
+                            f"Repoint alert '{name}' to a populated index, or decommission "
+                            f"it if '{index_node.name}' is retired."
+                        ),
+                    )
+                )
+                dead.append(index_node.id)
+
+            # 2b. Alert with no action configured.
+            actions = alert.properties.get("actions")
+            if not (isinstance(actions, str) and actions.strip()):
+                report.findings.append(
+                    HygieneFinding(
+                        id=f"no_action:{name}",
+                        category=CATEGORY_ALERT_NO_ACTION,
+                        severity=SEV_HIGH,
+                        title=f"Alert with no action: {name}",
+                        summary=(
+                            f"Alert '{name}' has no action configured — when it triggers, "
+                            f"nothing happens and no human is notified."
+                        ),
+                        evidence={"alert": name, "actions": actions or ""},
+                        affected_node_id=alert.id,
+                        fix=(
+                            f"Add an alert action to '{name}' (email, webhook, or a ticketing "
+                            f"integration) so a trigger reaches a human."
+                        ),
+                    )
+                )
+
+            # 2c. Alert with no owner.
+            owner = alert.properties.get("owner")
+            if not (isinstance(owner, str) and owner.strip() and owner.lower() != "nobody"):
+                report.findings.append(
+                    HygieneFinding(
+                        id=f"no_owner:{name}",
+                        category=CATEGORY_ALERT_NO_OWNER,
+                        severity=SEV_MEDIUM,
+                        title=f"Alert with no owner: {name}",
+                        summary=(
+                            f"Alert '{name}' has no clear owner — there's no obvious person "
+                            f"to escalate to when it fires."
+                        ),
+                        evidence={"alert": name, "owner": owner or ""},
+                        affected_node_id=alert.id,
+                        fix=(
+                            f"Assign an owner to '{name}' so on-call has a clear escalation path."
+                        ),
+                    )
+                )
+
+        report.dead_node_ids = list(dict.fromkeys(dead))  # de-dupe, keep order
+        self._findings = report
+        yield AgentEvent(
+            AgentPhase.DONE,
+            f"found {len(report.findings)} hygiene issue(s)",
+            data=report.counts,
         )
 
     # ---- Section context builders ----

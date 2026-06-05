@@ -7,6 +7,7 @@ interface RelationshipGraphProps {
   animated?: boolean; // true during exploration (nodes fade in), false in guide
   focusedNodeId?: string | null; // set externally (e.g. by a chip click) to highlight a chain
   onNodeClick?: (nodeId: string | null) => void;
+  deadNodeIds?: string[]; // Mode B: orphaned / dead nodes to flag in red
 }
 
 // Top-to-bottom layering. The dependency story reads downward:
@@ -154,8 +155,10 @@ export default function RelationshipGraph({
   animated = false,
   focusedNodeId,
   onNodeClick,
+  deadNodeIds,
 }: RelationshipGraphProps) {
   const [focusId, setFocusId] = useState<string | null>(null);
+  const deadSet = useMemo(() => new Set(deadNodeIds ?? []), [deadNodeIds]);
 
   // Mirror an externally-driven focus (a chip click) into the internal state so
   // it lights up the same chain as a direct node click. undefined means the
@@ -291,6 +294,8 @@ export default function RelationshipGraph({
             const hl = highlighted?.has(n.id) ?? false;
             const dimmed = highlighted !== null && !hl;
             const isNew = animated && !seenNodes.current.has(n.id);
+            const isDead = deadSet.has(n.id);
+            const DEAD_COLOR = 'var(--accent-red, #f87171)';
             return (
               <g
                 key={n.id}
@@ -298,6 +303,7 @@ export default function RelationshipGraph({
                   'graph-node',
                   dimmed ? 'graph-dimmed' : '',
                   isNew ? 'entering' : '',
+                  isDead ? 'graph-node-dead' : '',
                 ]
                   .filter(Boolean)
                   .join(' ')}
@@ -307,19 +313,25 @@ export default function RelationshipGraph({
                   handleNodeClick(n.id);
                 }}
               >
-                <title>{`${n.type}: ${n.name}`}</title>
+                <title>{isDead ? `${n.type}: ${n.name} — flagged (Mode B)` : `${n.type}: ${n.name}`}</title>
                 <rect
                   width={NODE_WIDTH}
                   height={NODE_HEIGHT}
                   rx={6}
                   ry={6}
-                  fill={color}
-                  fillOpacity={hl ? 0.28 : 0.15}
-                  stroke={color}
-                  strokeOpacity={hl || highlighted === null ? 0.7 : 0.4}
-                  strokeWidth={1}
+                  fill={isDead ? DEAD_COLOR : color}
+                  fillOpacity={isDead ? 0.12 : hl ? 0.28 : 0.15}
+                  stroke={isDead ? DEAD_COLOR : color}
+                  strokeOpacity={isDead ? 0.9 : hl || highlighted === null ? 0.7 : 0.4}
+                  strokeWidth={isDead ? 1.5 : 1}
+                  strokeDasharray={isDead ? '4 2' : undefined}
                 />
-                <NodeIcon type={n.type} color={color} />
+                {isDead && (
+                  <circle cx={NODE_WIDTH - 7} cy={7} r={4} fill={DEAD_COLOR} stroke="var(--bg-base, #0a0c10)" strokeWidth={1}>
+                    <title>Flagged by Mode B</title>
+                  </circle>
+                )}
+                <NodeIcon type={n.type} color={isDead ? DEAD_COLOR : color} />
                 <text
                   x={TEXT_X}
                   y={NODE_HEIGHT / 2}

@@ -23,6 +23,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import quote
 
 try:
     import requests
@@ -47,6 +48,9 @@ INDEXES: tuple[str, ...] = (
     "auth_events",
     "app_metrics",
     "deploy_logs",
+    # Landmine: created but never fed any events. An alert points here, so Mode B
+    # flags "alert on empty index". Keep it OUT of SAMPLE_EVENTS so it stays empty.
+    "legacy_winlogs",
 )
 
 # Each entry: (index, sourcetype, [event_lines])
@@ -126,6 +130,8 @@ MACROS: tuple[tuple[str, str], ...] = (
         'date_hour>=8 AND date_hour<=18 AND date_wday!="saturday" AND date_wday!="sunday"',
     ),
     ("exclude_internal_traffic", 'NOT src_ip IN ("10.0.0.*", "192.168.*")'),
+    # Landmine: referenced by no saved search / alert → Mode B flags "orphaned macro".
+    ("deprecated_geoip_filter", 'cidrmatch("0.0.0.0/0", src_ip)'),
 )
 
 # (lookup_table_filename, lookup_definition_name, local_csv_path)
@@ -165,13 +171,18 @@ SAVED_SEARCHES: tuple[tuple[str, str, str], ...] = (
 
 # (name, spl, cron_schedule, severity, alert_condition)
 # Alert severity in Splunk: 1=Info, 2=Low, 3=Medium, 4=High, 5=Critical
-ALERTS: tuple[tuple[str, str, str, int, str], ...] = (
+# Each entry: (name, spl, cron, severity, alert_condition, actions)
+# ``actions`` is the comma-separated alert action list ("" = no action → Mode B
+# flags "alert with no action"). The three real alerts carry "email" so they read
+# as healthy; only the Disk Space landmine is left actionless.
+ALERTS: tuple[tuple[str, str, str, int, str, str], ...] = (
     (
         "Critical: Multiple Failed Logins from Same IP",
         "index=auth_events action=failure `high_severity_filter` | stats count by src_ip | where count > 5 | lookup known_bad_ips ip AS src_ip OUTPUT threat_type, confidence",
         "*/5 * * * *",
         5,
         "search count > 0",
+        "email",
     ),
     (
         "Warning: API Latency Above Threshold",
@@ -179,6 +190,7 @@ ALERTS: tuple[tuple[str, str, str, int, str], ...] = (
         "*/15 * * * *",
         3,
         "search count > 0",
+        "email",
     ),
     (
         "Critical: Firewall Rule Violations",
@@ -186,6 +198,28 @@ ALERTS: tuple[tuple[str, str, str, int, str], ...] = (
         "*/5 * * * *",
         5,
         "search count > 0",
+        "email",
+    ),
+    # Landmine: reads from the empty legacy_winlogs index → "alert on empty index".
+    # Has an action so it ONLY trips the empty-index finding, not no-action.
+    (
+        "Legacy Windows Event Monitor",
+        "index=legacy_winlogs EventCode=4625 | stats count by host, user",
+        "*/10 * * * *",
+        3,
+        "search count > 0",
+        "email",
+    ),
+    # Landmine: no action configured → "alert with no action". The "Warning:"
+    # prefix makes discovery classify it as an alert (the MCP object shape omits
+    # alert_type, so the name prefix is the reliable signal).
+    (
+        "Warning: Low Disk Space",
+        "index=app_metrics disk_pct>90 | stats max(disk_pct) as max_disk by host",
+        "*/30 * * * *",
+        3,
+        "search count > 0",
+        "",
     ),
 )
 
@@ -727,31 +761,46 @@ def step_saved_searches(client: SplunkClient, counter: Counter) -> None:
 def step_alerts(client: SplunkClient, counter: Counter) -> None:
     print("[6/7] Creating alerts...")
     path = f"{client.APP_NAMESPACE}/saved/searches"
-    existing = client.list_names(path)
-    for name, spl, cron, severity, alert_cond in ALERTS:
-        if name in existing:
-            print(f"  - {name!r} already exists (skipped)")
-            counter.skip()
-            continue
+    existing = set(client.list_names(path))
+    for name, spl, cron, severity, alert_cond, actions in ALERTS:
+        # Editable fields. ``actions`` is enabled via per-action flags so the
+        # saved search's computed ``actions`` field reports them — that's what
+        # Mode B reads. An empty ``actions`` leaves the alert action-less.
+        data: dict[str, Any] = {
+            "search": spl,
+            "cron_schedule": cron,
+            "is_scheduled": 1,
+            "alert_type": "always",
+            "alert.severity": severity,
+            "alert.suppress": 0,
+            "alert_condition": alert_cond,
+            "alert.track": 1,
+            "dispatch.earliest_time": "-15m",
+            "dispatch.latest_time": "now",
+        }
+        if actions:
+            # Set the ``actions`` summary field directly — this Splunk build
+            # accepts it and reports it back, whereas ``action.<name>=1/true``
+            # is silently dropped. That field is what Mode B reads.
+            data["actions"] = actions
+            if "email" in actions:
+                data["action.email.to"] = "soc@demo.local"
         try:
-            r = client.post(
-                path,
-                data={
-                    "name": name,
-                    "search": spl,
-                    "cron_schedule": cron,
-                    "is_scheduled": 1,
-                    "alert_type": "always",
-                    "alert.severity": severity,
-                    "alert.suppress": 0,
-                    "alert_condition": alert_cond,
-                    "alert.track": 1,
-                    "dispatch.earliest_time": "-15m",
-                    "dispatch.latest_time": "now",
-                },
-            )
+            # Create, or update in place so a re-run cleans previously
+            # action-less / nobody-owned alerts (the step used to skip existing).
+            if name in existing:
+                r = client.post(f"{path}/{quote(name, safe='')}", data=data)
+                verb = "updated"
+            else:
+                r = client.post(path, data={"name": name, **data})
+                verb = "created"
             if r.status_code in (200, 201):
-                print(f"  ✓ {name!r} created (severity={severity})")
+                # Give it a real owner so healthy alerts don't trip "no owner".
+                client.post(
+                    f"{path}/{quote(name, safe='')}/acl",
+                    data={"owner": "admin", "sharing": "app"},
+                )
+                print(f"  ✓ {name!r} {verb} (severity={severity}, actions={actions or 'none'})")
                 counter.ok()
             elif _is_already_exists(r):
                 print(f"  - {name!r} already exists (skipped)")

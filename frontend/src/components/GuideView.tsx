@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, forwardRef, type ReactNode } from 'react';
-import { getGuide, exportGuide, generateStarterKitSSE, getStarterKit } from '../utils/api';
+import { getGuide, exportGuide, generateStarterKitSSE, getStarterKit, generateFindingsSSE, getFindings } from '../utils/api';
 import { markdownToHtml } from '../utils/markdown';
 import { loadEnv, envSummaryLine } from '../utils/env';
 import RelationshipGraph from './RelationshipGraph';
@@ -7,10 +7,11 @@ import ChatView from './ChatView';
 import CairnMark from './CairnMark';
 import IndexTiles, { categorize, type IndexTile } from './IndexTiles';
 import StarterKitView from './StarterKitView';
+import FindingsView from './FindingsView';
 import { SkeletonGuide, SkeletonText } from './Skeleton';
-import type { Guide, GuideSection, GraphNode, GraphEdge, StarterKit } from '../types';
+import type { Guide, GuideSection, GraphNode, GraphEdge, StarterKit, FindingsReport } from '../types';
 
-type ActiveView = 'guide' | 'starter-kit';
+type ActiveView = 'guide' | 'starter-kit' | 'findings';
 type KitSection = 'queries' | 'runbooks' | 'dashboard';
 
 const KIT_SECTIONS: { key: KitSection; label: string }[] = [
@@ -164,14 +165,48 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
   const [kitSection, setKitSection] = useState<KitSection>('queries');
   const kitCancelRef = useRef<(() => void) | null>(null);
 
+  // ── Mode B: findings ──
+  const [findings, setFindings] = useState<FindingsReport | null>(null);
+  const [findingsGenerating, setFindingsGenerating] = useState(false);
+  const [findingsProgress, setFindingsProgress] = useState<string[]>([]);
+  const [findingsError, setFindingsError] = useState('');
+  const findingsCancelRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     getGuide()
       .then(setGuide)
       .catch(err => setError(err instanceof Error ? err.message : String(err)));
   }, []);
 
-  // Tear down any in-flight starter-kit stream if the view unmounts.
-  useEffect(() => () => { kitCancelRef.current?.(); }, []);
+  // Tear down any in-flight starter-kit / findings stream if the view unmounts.
+  useEffect(() => () => { kitCancelRef.current?.(); findingsCancelRef.current?.(); }, []);
+
+  // Switch to findings, kicking off the scan the first time. Repeat clicks
+  // just re-show the already-generated report (or the in-progress stream).
+  function openFindings() {
+    setActiveView('findings');
+    if (findings || findingsGenerating) return;
+    setFindingsError('');
+    setFindingsProgress([]);
+    setFindingsGenerating(true);
+    findingsCancelRef.current = generateFindingsSSE(
+      (ev) => { if (ev.message) setFindingsProgress(prev => [...prev, ev.message]); },
+      () => {
+        getFindings()
+          .then(setFindings)
+          .catch(err => setFindingsError(err instanceof Error ? err.message : String(err)))
+          .finally(() => setFindingsGenerating(false));
+      },
+      (err) => { setFindingsError(err); setFindingsGenerating(false); },
+    );
+  }
+
+  // "Locate in graph" from a finding: return to the guide and focus the node.
+  function locateNode(nodeId: string) {
+    setActiveView('guide');
+    setFocusedNodeId(nodeId);
+    graphRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 
   // Switch to the starter kit, kicking off generation the first time. Repeat
   // clicks just re-show the already-generated kit (or the in-progress stream).
@@ -347,9 +382,18 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
             Re-explore
           </button>
           {activeView === 'guide' ? (
-            <button className="btn btn-amber-outline btn-sm" onClick={openStarterKit}>
-              {kitGenerating ? 'Building…' : starterKit ? 'Starter Kit' : 'Build Starter Kit'}
-            </button>
+            <>
+              <button className="btn btn-amber-outline btn-sm" onClick={openFindings}>
+                {findingsGenerating
+                  ? 'Scanning…'
+                  : findings
+                    ? `Findings${findings.findings.length ? ` (${findings.findings.length})` : ''}`
+                    : 'Find Issues'}
+              </button>
+              <button className="btn btn-amber-outline btn-sm" onClick={openStarterKit}>
+                {kitGenerating ? 'Building…' : starterKit ? 'Starter Kit' : 'Build Starter Kit'}
+              </button>
+            </>
           ) : (
             <button className="btn btn-secondary btn-sm" onClick={() => setActiveView('guide')}>
               Back to Guide
@@ -398,11 +442,28 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
                 <div className="guide-nav-divider" />
                 <button
                   className="guide-nav-item guide-nav-starter"
+                  onClick={openFindings}
+                >
+                  <span>Findings</span>
+                  <span className="guide-nav-mode-tag">Mode B</span>
+                </button>
+                <button
+                  className="guide-nav-item guide-nav-starter"
                   onClick={openStarterKit}
                 >
                   <span>Starter Kit</span>
                   <span className="guide-nav-mode-tag">Mode C</span>
                 </button>
+              </>
+            ) : activeView === 'findings' ? (
+              <>
+                <button
+                  className="guide-nav-item guide-nav-back"
+                  onClick={() => setActiveView('guide')}
+                >
+                  <span>← Back to Guide</span>
+                </button>
+                <div className="guide-nav-label guide-nav-label-amber">Findings</div>
               </>
             ) : (
               <>
@@ -455,6 +516,7 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
                       edges={graph.edges}
                       focusedNodeId={focusedNodeId}
                       onNodeClick={setFocusedNodeId}
+                      deadNodeIds={findings?.dead_node_ids}
                     />
                   </div>
                 )}
@@ -479,6 +541,15 @@ export default function GuideView({ onReExplore, onChipClick }: Props) {
                   ))}
                 </div>
               </>
+            ) : activeView === 'findings' ? (
+              <FindingsView
+                report={findings}
+                generating={findingsGenerating}
+                progress={findingsProgress}
+                error={findingsError}
+                onBack={() => setActiveView('guide')}
+                onLocate={locateNode}
+              />
             ) : (
               <StarterKitView
                 kit={starterKit}
