@@ -13,7 +13,7 @@ Cairn writes it down. By tracing dependency chains and reading real audit usage 
 ## How It Works
 
 Cairn is **agentic, not pipelined.** A Groq-hosted LLM is in the loop at every step, deciding what to investigate next based on what it has already discovered.
-
+ 
 ```
 +-------------------+
 |   Orient          |   What indexes / apps / users exist?
