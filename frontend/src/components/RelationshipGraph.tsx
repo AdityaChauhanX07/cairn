@@ -30,6 +30,47 @@ const PADDING = 40;
 const MIN_WIDTH = 480;
 const MIN_HEIGHT = 300;
 
+// Icon sits at the left of the node; the label flows after it.
+const ICON_SIZE = 14;
+const ICON_X = 12;
+const TEXT_X = 34;
+const TEXT_RIGHT_PAD = 12;
+
+// Per-type glyph drawn in a 14×14 box (stroke-based, inherits the node tint via
+// currentColor). Kept deliberately simple so they read at 14px.
+const TYPE_ICON: Partial<Record<GraphNodeType, string[]>> = {
+  // warning triangle with an exclamation
+  alert: ['M7 1.5 L13 12 H1 Z', 'M7 5.5 V8.5', 'M7 10.4 V10.5'],
+  // magnifier
+  saved_search: ['M6 6 m-4 0 a4 4 0 1 0 8 0 a4 4 0 1 0 -8 0', 'M9 9 L12.5 12.5'],
+  // function braces
+  macro: ['M6 2 C4 2 5 6 3 7 C5 8 4 12 6 12', 'M8 2 C10 2 9 6 11 7 C9 8 10 12 8 12'],
+  // table with a divider
+  lookup: ['M2 3 H12 V11 H2 Z', 'M2 6.3 H12', 'M6.7 3 V11'],
+  // database cylinder
+  index: ['M2 3 C2 1.9 4.2 1 7 1 C9.8 1 12 1.9 12 3 C12 4.1 9.8 5 7 5 C4.2 5 2 4.1 2 3', 'M2 3 V11 C2 12.1 4.2 13 7 13 C9.8 13 12 12.1 12 11 V3'],
+};
+
+function NodeIcon({ type, color }: { type: GraphNodeType; color: string }) {
+  const paths = TYPE_ICON[type];
+  if (!paths) return null;
+  return (
+    <g
+      transform={`translate(${ICON_X}, ${(NODE_HEIGHT - ICON_SIZE) / 2})`}
+      fill="none"
+      stroke={color}
+      strokeWidth={1.3}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      pointerEvents="none"
+    >
+      {paths.map((d) => (
+        <path key={d} d={d} />
+      ))}
+    </g>
+  );
+}
+
 interface Pos {
   x: number;
   y: number;
@@ -85,7 +126,8 @@ function edgePath(s: Pos, t: Pos): string {
 }
 
 function truncate(name: string): string {
-  const max = Math.floor((NODE_WIDTH - 22) / 7); // ~0.72rem mono ≈ 7px/char
+  // Space left for the label after the icon, at ~0.72rem mono ≈ 7px/char.
+  const max = Math.floor((NODE_WIDTH - TEXT_X - TEXT_RIGHT_PAD) / 7);
   if (name.length <= max) return name;
   return name.slice(0, Math.max(1, max - 1)) + '…';
 }
@@ -230,6 +272,7 @@ export default function RelationshipGraph({
                   .filter(Boolean)
                   .join(' ')}
                 d={edgePath(s, t)}
+                pathLength={1}
                 fill="none"
                 stroke={hl ? 'var(--accent-amber)' : 'var(--border)'}
                 strokeOpacity={hl ? 1 : 0.6}
@@ -276,10 +319,11 @@ export default function RelationshipGraph({
                   strokeOpacity={hl || highlighted === null ? 0.7 : 0.4}
                   strokeWidth={1}
                 />
+                <NodeIcon type={n.type} color={color} />
                 <text
-                  x={NODE_WIDTH / 2}
+                  x={TEXT_X}
                   y={NODE_HEIGHT / 2}
-                  textAnchor="middle"
+                  textAnchor="start"
                   dominantBaseline="central"
                   className="graph-node-label"
                   fill={hl ? 'var(--text-primary)' : 'var(--text-secondary)'}

@@ -1096,10 +1096,10 @@ html, body {
 .graph-node rect { transition: fill-opacity 300ms ease, stroke-opacity 300ms ease; }
 .graph-node:hover rect { stroke-opacity: 0.9; }
 
-.graph-node.entering { animation: nodeEnter 400ms ease forwards; transform-box: fill-box; transform-origin: center; }
+.graph-node.entering { animation: nodeEnter 400ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards; transform-box: fill-box; transform-origin: center; }
 @keyframes nodeEnter {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 .graph-node-label {
@@ -1112,10 +1112,12 @@ html, body {
 .graph-edge {
   transition: stroke 300ms ease, opacity 300ms ease, stroke-width 300ms ease;
 }
-.graph-edge.edge-entering { animation: edgeEnter 400ms ease 200ms backwards; }
-@keyframes edgeEnter {
-  from { opacity: 0; }
-  to { opacity: 1; }
+/* Edges draw themselves in: paths carry pathLength=1, so dashoffset 1→0 sweeps
+   the stroke on regardless of the curve's real length. */
+.graph-edge.edge-entering { animation: edgeDraw 500ms ease 200ms backwards; }
+@keyframes edgeDraw {
+  from { stroke-dasharray: 1; stroke-dashoffset: 1; }
+  to { stroke-dasharray: 1; stroke-dashoffset: 0; }
 }
 
 .graph-dimmed { opacity: 0.2; }
