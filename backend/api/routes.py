@@ -60,6 +60,7 @@ def _current_session(
     *,
     require_explored: bool = False,
     require_guide: bool = False,
+    require_starter_kit: bool = False,
 ) -> _Session:
     """Return the live session, validating prerequisite state.
 
@@ -79,6 +80,11 @@ def _current_session(
         raise HTTPException(
             status_code=400,
             detail="no guide generated yet — open GET /api/generate (SSE) first",
+        )
+    if require_starter_kit and _session.orchestrator.starter_kit is None:
+        raise HTTPException(
+            status_code=400,
+            detail="no starter kit yet — open GET /api/starter-kit (SSE) first",
         )
     return _session
 
@@ -259,6 +265,47 @@ async def get_graph() -> dict[str, Any]:
     """
     session = _current_session()
     return session.orchestrator.graph.relationship_view()
+
+
+@router.get("/starter-kit")
+async def starter_kit_stream() -> EventSourceResponse:
+    """Stream Mode C starter-kit generation as Server-Sent Events.
+
+    Runs ``Orchestrator.generate_starter_kit()`` — generates common-task SPL,
+    per-alert runbooks, and a dashboard skeleton. Each event's ``event`` field
+    is the phase name; ``data`` is the serialized ``AgentEvent``. When the
+    stream closes, the kit is available via ``GET /api/starter-kit/data``.
+    """
+    session = _current_session(require_explored=True)
+
+    async def event_stream() -> AsyncIterator[dict[str, Any]]:
+        async for event in session.orchestrator.generate_starter_kit():
+            yield {
+                "event": event.phase.value,
+                "data": json.dumps(event.to_dict()),
+            }
+
+    return EventSourceResponse(event_stream())
+
+
+@router.get("/starter-kit/data")
+async def get_starter_kit() -> dict[str, Any]:
+    """Return the generated starter kit as JSON."""
+    session = _current_session(require_explored=True, require_starter_kit=True)
+    return session.orchestrator.starter_kit.to_dict()  # type: ignore[union-attr]
+
+
+@router.get("/starter-kit/dashboard-xml")
+async def get_starter_kit_dashboard_xml() -> Response:
+    """Return the generated dashboard as raw Splunk Simple XML for download."""
+    session = _current_session(require_explored=True, require_starter_kit=True)
+    kit = session.orchestrator.starter_kit
+    assert kit is not None  # require_starter_kit check above guarantees this
+    return PlainTextResponse(
+        kit.dashboard_xml,
+        media_type="application/xml; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="cairn-starter-dashboard.xml"'},
+    )
 
 
 @router.post("/ask", response_model=AskResponse)

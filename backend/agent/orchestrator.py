@@ -30,6 +30,7 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
+from xml.sax.saxutils import escape
 
 from groq import AsyncGroq
 
@@ -43,6 +44,7 @@ from mcp_client import SplunkMCPClient, SplunkMCPError
 
 from .discovery import DiscoveryEngine, Finding
 from .graph import EdgeType, NodeType, RelationshipGraph, SPLParser
+from .starter_kit import DashboardPanel, GeneratedSPL, Runbook, StarterKit
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +177,7 @@ class Orchestrator:
             explain_spl_call=self._explain_spl_with_fallback,
         )
         self._guide: OnboardingGuide | None = None
+        self._starter_kit: StarterKit | None = None
         self._lock = asyncio.Lock()
 
     # ---- public accessors ----
@@ -186,6 +189,10 @@ class Orchestrator:
     @property
     def guide(self) -> OnboardingGuide | None:
         return self._guide
+
+    @property
+    def starter_kit(self) -> StarterKit | None:
+        return self._starter_kit
 
     # ---- LLM call helper ----
 
@@ -259,6 +266,63 @@ class Orchestrator:
             f"max.\n\nSPL:\n```\n{spl}\n```",
             max_tokens,
         )
+
+    # ---- SPL generation (MCP-first, LLM fallback) ----
+
+    async def _generate_spl_with_fallback(self, description: str) -> str:
+        """Turn a natural-language task into SPL, preferring ``saia_generate_spl``.
+
+        The native tool knows this deployment's own indexes and sourcetypes;
+        we fall back to a rate-limited Groq call (grounded in the discovered
+        user indexes) only when it's unavailable or returns nothing useful, so
+        generation never hard-fails.
+        """
+        if self._mcp.has_saia():
+            try:
+                spl = (await self._mcp.generate_spl(description)).strip()
+                if spl and "error" not in spl.lower():
+                    return spl
+                logger.warning(
+                    "saia_generate_spl returned an empty/error result, falling back to LLM"
+                )
+            except Exception as exc:  # noqa: BLE001 - any failure routes to the LLM
+                logger.warning("saia_generate_spl unavailable, falling back to LLM: %s", exc)
+
+        indexes = self._user_index_summaries()
+        prompt = (
+            "You are a Splunk SPL expert. Generate an SPL query for this task. "
+            "Respond with ONLY the SPL query, nothing else.\n\n"
+            f"Task: {description}\n\n"
+            f"Available indexes: {json.dumps(indexes, indent=2)}"
+        )
+        return _clean_spl_response((await self._llm_call(prompt, max_tokens=300)).strip())
+
+    # ---- SPL optimization (MCP-first, LLM fallback) ----
+
+    async def _optimize_spl_with_fallback(self, spl: str) -> str:
+        """Suggest a faster/cleaner version of ``spl``, preferring ``saia_optimize_spl``.
+
+        Falls back to a rate-limited Groq call on failure. The result is a
+        suggestion (a one-sentence rationale plus the optimized SPL), not a
+        bare query, so we don't strip code fences the way generation does.
+        """
+        if self._mcp.has_saia():
+            try:
+                optimized = (await self._mcp.optimize_spl(spl)).strip()
+                if optimized and "error" not in optimized.lower():
+                    return optimized
+                logger.warning(
+                    "saia_optimize_spl returned an empty/error result, falling back to LLM"
+                )
+            except Exception as exc:  # noqa: BLE001 - any failure routes to the LLM
+                logger.warning("saia_optimize_spl unavailable, falling back to LLM: %s", exc)
+
+        prompt = (
+            "You are a Splunk SPL expert. Suggest an optimized version of this "
+            "query. Explain what you changed and why in one sentence, then give "
+            f"the optimized SPL.\n\nOriginal SPL: {spl}"
+        )
+        return (await self._llm_call(prompt, max_tokens=500)).strip()
 
     # ---- The main exploration flow ----
 
@@ -478,6 +542,178 @@ class Orchestrator:
             phase=AgentPhase.DONE,
             message="guide ready",
             data={"section_count": len(sections)},
+        )
+
+    # ---- Starter kit (Mode C) ----
+
+    async def generate_starter_kit(self) -> AsyncIterator[AgentEvent]:
+        """Generate the Mode C starter kit from the discovered environment.
+
+        Wraps ``_run_generate_starter_kit`` with the orchestrator lock and a
+        crash guard, matching ``explore`` / ``generate_guide``.
+        """
+        async with self._lock:
+            try:
+                async for event in self._run_generate_starter_kit():
+                    yield event
+            except Exception as exc:
+                logger.exception("starter-kit generation crashed")
+                yield AgentEvent(
+                    phase=AgentPhase.ERROR,
+                    message="starter kit generation failed",
+                    detail=str(exc),
+                )
+
+    async def _run_generate_starter_kit(self) -> AsyncIterator[AgentEvent]:
+        kit = StarterKit()
+
+        # User-facing indexes only — skip placeholders and Splunk-internal `_*`.
+        user_indexes = [
+            n
+            for n in self._graph.nodes_by_type(NodeType.INDEX)
+            if not n.name.startswith("_") and not n.properties.get("placeholder")
+        ]
+        alerts = self._graph.nodes_by_type(NodeType.ALERT)
+
+        # ---- 1. Generate common-task SPL queries ----
+        yield AgentEvent(AgentPhase.SYNTHESIZE, "generating starter SPL queries...")
+
+        # (task description, GeneratedSPL.category, index name)
+        spl_tasks: list[tuple[str, str, str]] = []
+        for idx in user_indexes:
+            category = _categorize_index(idx.name)
+            if category == "security":
+                spl_tasks.append(("Find all failed login attempts in the last 24 hours", "security", idx.name))
+                spl_tasks.append(("Show top source IPs with blocked firewall traffic", "security", idx.name))
+            elif category == "application":
+                spl_tasks.append(("Find HTTP 500 errors in the last hour", "application", idx.name))
+                spl_tasks.append(("Show average response time by endpoint", "application", idx.name))
+            elif category == "deployment":
+                spl_tasks.append(("Show failed deployments in the last 7 days", "infrastructure", idx.name))
+
+        for desc, cat, idx_name in spl_tasks:
+            full_desc = f"{desc} from the {idx_name} index"
+            spl = await self._generate_spl_with_fallback(full_desc)
+            if spl and spl.strip().upper() != "NO_QUERY":
+                kit.generated_queries.append(
+                    GeneratedSPL(
+                        title=desc,
+                        description=f"Query against {idx_name}",
+                        spl=spl.strip(),
+                        category=cat,
+                    )
+                )
+
+        yield AgentEvent(
+            AgentPhase.SYNTHESIZE,
+            f"generated {len(kit.generated_queries)} starter queries",
+        )
+
+        # ---- 2. Generate per-alert runbooks ----
+        yield AgentEvent(AgentPhase.SYNTHESIZE, "generating alert runbooks...")
+
+        for alert in alerts:
+            chain = self._render_chain_tree(alert.id)
+            spl = alert.properties.get("spl") or ""
+            spl_explanation = alert.properties.get("spl_explanation") or ""
+            owner = alert.properties.get("owner") or ""
+
+            prompt = (
+                "Generate a concise runbook for this Splunk alert. Respond in "
+                "JSON format only, no markdown.\n"
+                "{\n"
+                '  "what_it_means": "one paragraph explanation",\n'
+                '  "first_checks": ["check 1", "check 2", "check 3"],\n'
+                '  "spl_to_run": "an investigative SPL query to run when this fires",\n'
+                '  "who_to_contact": "guidance on who to contact"\n'
+                "}\n\n"
+                f"Alert name: {alert.name}\n"
+                f"Alert SPL: {spl or 'N/A'}\n"
+                f"SPL explanation: {spl_explanation or 'N/A'}\n"
+                f"Owner: {owner or 'unknown'}\n"
+                f"Dependency chain:\n{chain}\n"
+            )
+            runbook_json = await self._llm_call(prompt, max_tokens=500)
+
+            severity = _runbook_severity(alert.name)
+            default_contact = f"{owner} (alert owner)" if owner else "Check with your team lead"
+
+            rb_data = _extract_json_object(runbook_json)
+            if rb_data is not None:
+                kit.runbooks.append(
+                    Runbook(
+                        alert_name=alert.name,
+                        severity=severity,
+                        what_it_means=str(rb_data.get("what_it_means", "")),
+                        chain_summary=chain,
+                        first_checks=_as_str_list(rb_data.get("first_checks")),
+                        spl_to_run=str(rb_data.get("spl_to_run", "")) or spl,
+                        who_to_contact=str(rb_data.get("who_to_contact") or default_contact),
+                    )
+                )
+            else:
+                # Defensive fallback: use the raw LLM text as the explanation.
+                kit.runbooks.append(
+                    Runbook(
+                        alert_name=alert.name,
+                        severity=severity,
+                        what_it_means=runbook_json.strip()[:500],
+                        chain_summary=chain,
+                        first_checks=[
+                            "Review the alert SPL",
+                            "Check the source index",
+                            "Contact the alert owner",
+                        ],
+                        spl_to_run=spl,
+                        who_to_contact=default_contact,
+                    )
+                )
+
+        yield AgentEvent(AgentPhase.SYNTHESIZE, f"generated {len(kit.runbooks)} runbooks")
+
+        # ---- 3. Generate dashboard skeleton ----
+        yield AgentEvent(AgentPhase.SYNTHESIZE, "generating dashboard skeleton...")
+
+        # One event-volume timechart per non-empty index.
+        for idx in user_indexes:
+            if not idx.properties.get("totalEventCount"):
+                continue
+            kit.dashboard_panels.append(
+                DashboardPanel(
+                    title=f"{idx.name} — Event Volume",
+                    spl=f"index={idx.name} | timechart count by sourcetype",
+                    viz_type="timechart",
+                )
+            )
+
+        # One table panel per alert that carries SPL.
+        for alert in alerts:
+            alert_spl = alert.properties.get("spl")
+            if alert_spl:
+                kit.dashboard_panels.append(
+                    DashboardPanel(
+                        title=f"Alert: {alert.name}",
+                        spl=alert_spl,
+                        viz_type="table",
+                    )
+                )
+
+        kit.dashboard_xml = _generate_simple_xml(kit.dashboard_panels, "Cairn Starter Dashboard")
+
+        yield AgentEvent(
+            AgentPhase.SYNTHESIZE,
+            f"generated dashboard with {len(kit.dashboard_panels)} panels",
+        )
+
+        self._starter_kit = kit
+        yield AgentEvent(
+            AgentPhase.DONE,
+            "starter kit ready",
+            data={
+                "query_count": len(kit.generated_queries),
+                "runbook_count": len(kit.runbooks),
+                "panel_count": len(kit.dashboard_panels),
+            },
         )
 
     # ---- Section context builders ----
@@ -756,12 +992,14 @@ class Orchestrator:
             return {"answer": _ASK_UNAVAILABLE_MESSAGE, "live_queries": live_queries}
         return {"answer": answer, "live_queries": live_queries}
 
-    async def _draft_live_spl(self, question: str) -> str:
-        """Ask the LLM for an SPL query that answers ``question``.
+    def _user_index_summaries(self) -> list[dict[str, Any]]:
+        """User-facing indexes with their sourcetypes.
 
-        Returns the SPL string (or ``"NO_QUERY"`` if not answerable via SPL).
+        Skips placeholders and Splunk-internal ``_*`` indexes — the set an
+        engineer would actually search. Shared by live-SPL drafting and the
+        ``saia_generate_spl`` LLM fallback so both ground on the same view.
         """
-        index_summaries: list[dict[str, Any]] = []
+        summaries: list[dict[str, Any]] = []
         for node in self._graph.nodes_by_type(NodeType.INDEX):
             if node.properties.get("placeholder"):
                 continue
@@ -771,7 +1009,15 @@ class Orchestrator:
                 e.source.split(":", 1)[1] if ":" in e.source else e.source
                 for e in self._graph.in_edges(node.id, EdgeType.SOURCETYPE_OF)
             ]
-            index_summaries.append({"index": node.name, "sourcetypes": sourcetypes[:10]})
+            summaries.append({"index": node.name, "sourcetypes": sourcetypes[:10]})
+        return summaries
+
+    async def _draft_live_spl(self, question: str) -> str:
+        """Ask the LLM for an SPL query that answers ``question``.
+
+        Returns the SPL string (or ``"NO_QUERY"`` if not answerable via SPL).
+        """
+        index_summaries = self._user_index_summaries()
 
         prompt = (
             "You are a Splunk SPL expert. Given this question about a Splunk "
@@ -981,6 +1227,104 @@ def _clean_spl_response(text: str) -> str:
     if s.endswith("```"):
         s = s[: -3].rstrip()
     return s.strip()
+
+
+# ---- Starter-kit helpers --------------------------------------------------
+
+
+def _categorize_index(name: str) -> str:
+    """Bucket a demo index by purpose so we can pick relevant starter tasks."""
+    if name in ("auth_events", "firewall_logs"):
+        return "security"
+    if name in ("web_logs", "app_metrics"):
+        return "application"
+    if name in ("deploy_logs",):
+        return "deployment"
+    return "other"
+
+
+def _runbook_severity(alert_name: str) -> str:
+    """Map an alert name to the runbook severity vocabulary."""
+    lower = alert_name.lower()
+    if "critical" in lower:
+        return "critical"
+    if "info" in lower:
+        return "info"
+    return "warning"
+
+
+def _as_str_list(value: Any) -> list[str]:
+    """Coerce an LLM-supplied ``first_checks`` value into a clean list of strings."""
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """Best-effort parse of a JSON object from a possibly-fenced LLM reply.
+
+    Strips ```` ```json ```` fencing and narrows to the outermost ``{...}`` so
+    trailing prose doesn't break parsing. Returns ``None`` on any failure —
+    callers always have a non-LLM fallback.
+    """
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned[:4].lower() == "json":
+            cleaned = cleaned[4:].strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        parsed = json.loads(cleaned[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _generate_simple_xml(panels: list[DashboardPanel], title: str) -> str:
+    """Render panels as importable Splunk Simple XML.
+
+    Titles and SPL are XML-escaped — alert SPL routinely contains ``<``, ``>``
+    and ``&``, which would otherwise produce a malformed (non-importable)
+    dashboard.
+    """
+    rows: list[str] = []
+    for panel in panels:
+        viz_element = {
+            "table": "<table />",
+            "timechart": "<chart />",
+            "single": "<single />",
+            "bar": "<chart />",
+        }.get(panel.viz_type, "<table />")
+
+        rows.append(
+            f"""  <row>
+    <panel>
+      <title>{escape(panel.title)}</title>
+      <search>
+        <query>{escape(panel.spl)}</query>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </search>
+      {viz_element}
+    </panel>
+  </row>"""
+        )
+
+    body = "\n".join(rows)
+    return (
+        '<dashboard version="1.1">\n'
+        f"  <label>{escape(title)}</label>\n"
+        "  <description>Auto-generated by Cairn based on environment analysis</description>\n"
+        f"{body}\n"
+        "</dashboard>"
+    )
 
 
 def _strip_leading_h2(body: str, title: str) -> str:

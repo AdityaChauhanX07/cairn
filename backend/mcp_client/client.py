@@ -107,6 +107,8 @@ TOOL_RUN_SAVED_SEARCH = "splunk_run_saved_search"
 # Optional saia_* tools — require AI Assistant for SPL.
 TOOL_EXPLAIN_SPL = "saia_explain_spl"
 TOOL_ASK_SPLUNK_QUESTION = "saia_ask_splunk_question"
+TOOL_GENERATE_SPL = "saia_generate_spl"
+TOOL_OPTIMIZE_SPL = "saia_optimize_spl"
 
 CORE_TOOLS: tuple[str, ...] = (
     TOOL_GET_INFO,
@@ -124,6 +126,8 @@ CORE_TOOLS: tuple[str, ...] = (
 OPTIONAL_TOOLS: tuple[str, ...] = (
     TOOL_EXPLAIN_SPL,
     TOOL_ASK_SPLUNK_QUESTION,
+    TOOL_GENERATE_SPL,
+    TOOL_OPTIMIZE_SPL,
 )
 
 
@@ -143,13 +147,24 @@ class ToolAvailability:
 
     @property
     def has_saia(self) -> bool:
-        return TOOL_EXPLAIN_SPL in self.available or TOOL_ASK_SPLUNK_QUESTION in self.available
+        # True if the server exposes *any* AI-Assistant-for-SPL tool.
+        return bool(self.available & set(OPTIONAL_TOOLS))
+
+    @property
+    def has_generate_spl(self) -> bool:
+        return TOOL_GENERATE_SPL in self.available
+
+    @property
+    def has_optimize_spl(self) -> bool:
+        return TOOL_OPTIMIZE_SPL in self.available
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "available": sorted(self.available),
             "missing": sorted(self.missing),
             "has_saia": self.has_saia,
+            "has_generate_spl": self.has_generate_spl,
+            "has_optimize_spl": self.has_optimize_spl,
         }
 
 
@@ -530,6 +545,36 @@ class SplunkMCPClient:
         if not question or not question.strip():
             raise SplunkMCPError("ask_splunk_question: question cannot be empty")
         result = await self._call(TOOL_ASK_SPLUNK_QUESTION, {"question": question})
+        return _expect_text(result)
+
+    async def generate_spl(self, description: str) -> str:
+        """Generate an SPL query from a natural-language ``description``.
+
+        Unlike :py:meth:`explain_spl`, this swallows failures and returns an
+        empty string (missing tool, MCP error, or blank input) so callers can
+        cheaply route to an LLM fallback on a falsy result.
+        """
+        if not description or not description.strip():
+            return ""
+        try:
+            result = await self._call(TOOL_GENERATE_SPL, {"description": description})
+        except SplunkMCPError as exc:
+            logger.warning("%s failed: %s", TOOL_GENERATE_SPL, exc)
+            return ""
+        return _expect_text(result)
+
+    async def optimize_spl(self, spl: str) -> str:
+        """Suggest a faster/cleaner version of ``spl`` via the SAIA tool.
+
+        Returns an empty string on any failure (see :py:meth:`generate_spl`).
+        """
+        if not spl or not spl.strip():
+            return ""
+        try:
+            result = await self._call(TOOL_OPTIMIZE_SPL, {"spl": spl})
+        except SplunkMCPError as exc:
+            logger.warning("%s failed: %s", TOOL_OPTIMIZE_SPL, exc)
+            return ""
         return _expect_text(result)
 
 
