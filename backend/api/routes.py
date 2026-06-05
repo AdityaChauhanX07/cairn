@@ -108,8 +108,15 @@ class AskRequest(BaseModel):
     question: str = Field(..., min_length=1)
 
 
+class LiveQuery(BaseModel):
+    type: str
+    query: str | None = None
+    name: str | None = None
+
+
 class AskResponse(BaseModel):
     answer: str
+    live_queries: list[LiveQuery] = Field(default_factory=list)
 
 
 # ---- Endpoints -----------------------------------------------------------
@@ -264,8 +271,11 @@ async def ask(req: AskRequest) -> AskResponse:
     to context-only on failure.
     """
     session = _current_session(require_explored=True)
-    answer = await session.orchestrator.ask(req.question)
-    return AskResponse(answer=answer)
+    result = await session.orchestrator.ask(req.question)
+    return AskResponse(
+        answer=result["answer"],
+        live_queries=result.get("live_queries", []),
+    )
 
 
 @router.get("/export")

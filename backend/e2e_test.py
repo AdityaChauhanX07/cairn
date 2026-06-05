@@ -176,14 +176,16 @@ async def _async_main() -> int:
         _section("Phase C: Orchestrator.ask()")
         print(f"  Q: {QA_QUESTION}\n")
         try:
-            answer = await orchestrator.ask(QA_QUESTION)
+            result = await orchestrator.ask(QA_QUESTION)
         except Exception as exc:
             print(f"  ✗ ask() raised {type(exc).__name__}: {exc}")
             traceback.print_exc()
             return 1
         print("  A:")
-        for line in answer.splitlines():
+        for line in result["answer"].splitlines():
             print(f"      {line}")
+        for q in result["live_queries"]:
+            print(f"      [live] {q}")
 
     finally:
         await client.aclose()

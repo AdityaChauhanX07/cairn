@@ -654,7 +654,7 @@ class Orchestrator:
 
     # ---- Follow-up Q&A ----
 
-    async def ask(self, question: str) -> str:
+    async def ask(self, question: str) -> dict[str, Any]:
         """Answer a follow-up question grounded in the discovered graph.
 
         When the question implies "fresh data" (e.g. *"how many failed logins
@@ -672,6 +672,10 @@ class Orchestrator:
 
         Any MCP failure along the way falls back silently to context-only —
         we still return *some* answer rather than 500-ing on the user.
+
+        Returns a dict ``{"answer": str, "live_queries": list}`` where each
+        live-query entry records what was actually run against Splunk (an SPL
+        string or a saved-search name) so the UI can show provenance.
         """
         # ---- conceptual Splunk-domain question → saia_ask_splunk_question ----
         # General "what is SPL / how does this command work" questions are best
@@ -681,7 +685,7 @@ class Orchestrator:
             try:
                 answer = (await self._mcp.ask_splunk_question(question)).strip()
                 if answer and "error" not in answer.lower():
-                    return answer
+                    return {"answer": answer, "live_queries": []}
                 logger.warning(
                     "saia_ask_splunk_question returned an empty/error result, "
                     "falling back to LLM"
@@ -693,6 +697,8 @@ class Orchestrator:
 
         snapshot = self._graph.to_dict()
         live_sections: list[str] = []
+        # What we actually ran against Splunk, surfaced to the UI as provenance.
+        live_queries: list[dict[str, Any]] = []
 
         # ---- live SPL query (if the question implies fresh data) ----
         if _wants_live_data(question):
@@ -711,6 +717,7 @@ class Orchestrator:
                         f"LIVE QUERY (`{spl}`):\n"
                         f"{json.dumps(result, indent=2, default=str)[:3000]}"
                     )
+                    live_queries.append({"type": "spl_query", "query": spl})
 
         # ---- saved-search dispatch (if the question names one) ----
         named_search = self._match_known_search(question)
@@ -724,6 +731,7 @@ class Orchestrator:
                     f"SAVED SEARCH RESULTS (`{named_search}`):\n"
                     f"{json.dumps(ss_result, indent=2, default=str)[:3000]}"
                 )
+                live_queries.append({"type": "saved_search", "name": named_search})
 
         prompt_parts = [
             "You are Cairn, an AI assistant that already explored this Splunk "
@@ -741,12 +749,12 @@ class Orchestrator:
             answer = (await self._llm_call(prompt, max_tokens=1000)).strip()
         except Exception as exc:
             logger.warning("ask() LLM call failed: %s", exc)
-            return _ASK_UNAVAILABLE_MESSAGE
+            return {"answer": _ASK_UNAVAILABLE_MESSAGE, "live_queries": live_queries}
         # _llm_call returns a fallback marker (rather than raising) when it
         # exhausts retries on a rate limit; translate it for the Q&A context.
         if not answer or answer == _RATE_LIMIT_SECTION_FALLBACK or "rate_limit_exceeded" in answer:
-            return _ASK_UNAVAILABLE_MESSAGE
-        return answer
+            return {"answer": _ASK_UNAVAILABLE_MESSAGE, "live_queries": live_queries}
+        return {"answer": answer, "live_queries": live_queries}
 
     async def _draft_live_spl(self, question: str) -> str:
         """Ask the LLM for an SPL query that answers ``question``.

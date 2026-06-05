@@ -1,4 +1,4 @@
-import type { AgentEvent, Guide, GraphData } from '../types';
+import type { AgentEvent, Guide, GraphData, AskResponse } from '../types';
 
 const BASE = 'http://localhost:8000/api';
 
@@ -126,7 +126,7 @@ export async function getGraph(): Promise<GraphData> {
   return res.json() as Promise<GraphData>;
 }
 
-export async function askQuestion(question: string): Promise<string> {
+export async function askQuestion(question: string): Promise<AskResponse> {
   const res = await fetch(`${BASE}/ask`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -136,8 +136,11 @@ export async function askQuestion(question: string): Promise<string> {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error((err as { detail?: string }).detail ?? res.statusText);
   }
-  const data = await res.json() as { answer: string };
-  return data.answer;
+  // Tolerate the legacy shape (a bare string) as well as the current
+  // { answer, live_queries } object — older backends may return either.
+  const data = await res.json() as string | Partial<AskResponse>;
+  if (typeof data === 'string') return { answer: data, live_queries: [] };
+  return { answer: data.answer ?? '', live_queries: data.live_queries ?? [] };
 }
 
 export async function exportGuide(format: string): Promise<string> {

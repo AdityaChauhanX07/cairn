@@ -11,6 +11,14 @@ interface Props {
   onChipClick?: (term: string) => void;
 }
 
+// Pull the index name out of an SPL string for the provenance label; falls
+// back to a generic "Splunk" when there's no explicit index= clause.
+function extractIndexFromSpl(spl?: string): string {
+  if (!spl) return 'Splunk';
+  const match = spl.match(/index=(\S+)/);
+  return match ? match[1] : 'Splunk';
+}
+
 // Catch clicks bubbling up from a rendered Splunk-object chip and forward the
 // term. Shared by every markdown surface so the behavior stays uniform.
 function chipClickHandler(onChipClick?: (term: string) => void) {
@@ -43,8 +51,11 @@ export default function ChatView({ onChipClick }: Props) {
     setMessages(prev => [...prev, { role: 'user', content: q }]);
     setLoading(true);
     try {
-      const answer = await askQuestion(q);
-      setMessages(prev => [...prev, { role: 'assistant', content: answer }]);
+      const { answer, live_queries } = await askQuestion(q);
+      setMessages(prev => [
+        ...prev,
+        { role: 'assistant', content: answer, liveQueries: live_queries },
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -128,16 +139,30 @@ function ChatBubble({
   onChipClick?: (term: string) => void;
 }) {
   const isUser = message.role === 'user';
-  return (
-    <div className={`chat-bubble ${isUser ? 'user' : 'assistant'}`}>
-      {isUser ? (
+  if (isUser) {
+    return (
+      <div className="chat-bubble user">
         <div className="bubble-body">{message.content}</div>
-      ) : (
-        <div
-          className="bubble-body markdown-body"
-          onClick={chipClickHandler(onChipClick)}
-          dangerouslySetInnerHTML={{ __html: markdownToHtml(message.content) }}
-        />
+      </div>
+    );
+  }
+  return (
+    <div className="chat-bubble assistant">
+      <div
+        className="bubble-body markdown-body"
+        onClick={chipClickHandler(onChipClick)}
+        dangerouslySetInnerHTML={{ __html: markdownToHtml(message.content) }}
+      />
+      {message.liveQueries && message.liveQueries.length > 0 && (
+        <div className="provenance">
+          {message.liveQueries.map((q, i) => (
+            <div key={i} className="provenance-tag">
+              {q.type === 'spl_query'
+                ? `ran live query against ${extractIndexFromSpl(q.query)}`
+                : `ran saved search "${q.name}"`}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

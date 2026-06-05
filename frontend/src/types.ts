@@ -50,9 +50,21 @@ export interface Guide {
   graph_edges?: GraphEdge[];
 }
 
+export interface LiveQuery {
+  type: 'spl_query' | 'saved_search' | string;
+  query?: string;
+  name?: string;
+}
+
+export interface AskResponse {
+  answer: string;
+  live_queries: LiveQuery[];
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  liveQueries?: LiveQuery[];
 }
 
 export type AppState = 'connect' | 'explore' | 'guide' | 'qa';

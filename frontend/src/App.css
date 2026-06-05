@@ -985,7 +985,8 @@ html, body {
 /* iMessage-style alignment */
 .chat-bubble { display: flex; }
 .chat-bubble.user { justify-content: flex-end; }
-.chat-bubble.assistant { justify-content: flex-start; }
+/* assistant stacks the bubble + any provenance tags in a left-aligned column */
+.chat-bubble.assistant { flex-direction: column; align-items: flex-start; }
 
 .bubble-body {
   max-width: 80%;
@@ -1002,6 +1003,24 @@ html, body {
 .chat-bubble.assistant .bubble-body {
   background: var(--bg-raised);
   color: var(--text-primary);
+}
+
+/* provenance — proof a live Splunk query backed this answer (green = live) */
+.provenance {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.provenance-tag {
+  font-family: var(--font-machine);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  padding: 3px 8px;
+  background: rgba(52, 211, 153, 0.08);
+  border-left: 2px solid var(--accent-green);
+  border-radius: 0 3px 3px 0;
+  letter-spacing: 0.3px;
 }
 
 /* input — pinned to the bottom of the panel */
