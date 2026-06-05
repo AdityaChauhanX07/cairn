@@ -4,8 +4,20 @@ import { markdownToHtml } from '../utils/markdown';
 import { SkeletonText } from './Skeleton';
 import type { ChatMessage } from '../types';
 
-const SUGGESTED_QUESTION =
-  "What does 'Critical: Multiple Failed Logins from Same IP' mean and what should I do when it fires?";
+// Starting points shown before the first question. The 3am-alert one leads —
+// it's the most compelling demo of what Cairn can answer.
+const SUGGESTED_QUESTIONS = [
+  "What does 'Critical: Multiple Failed Logins from Same IP' mean and what should I do when it fires?",
+  'Which indexes are most important and what data lives in each?',
+  'What macros does this environment use and where?',
+  'Show me recent failed login attempts',
+  'What dashboards should I check first?',
+];
+
+// Compact label for a pill — keeps the narrow panel tidy.
+function truncateQuestion(q: string): string {
+  return q.length > 60 ? `${q.slice(0, 60)}...` : q;
+}
 
 interface Props {
   onChipClick?: (term: string) => void;
@@ -36,6 +48,9 @@ export default function ChatView({ onChipClick }: Props) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Latches true on the first send so the starter pills never reappear, even
+  // if the message list is later cleared.
+  const [started, setStarted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -48,6 +63,7 @@ export default function ChatView({ onChipClick }: Props) {
     const q = question.trim();
     setInput('');
     setError('');
+    setStarted(true);
     setMessages(prev => [...prev, { role: 'user', content: q }]);
     setLoading(true);
     try {
@@ -73,12 +89,18 @@ export default function ChatView({ onChipClick }: Props) {
   return (
     <div className="chat-container">
       <div className="chat-scroll">
-        {messages.length === 0 && !loading && (
-          <div className="chat-suggested">
-            <span className="chat-suggested-label">Try asking</span>
-            <button className="chat-suggested-link" onClick={() => send(SUGGESTED_QUESTION)}>
-              {SUGGESTED_QUESTION}
-            </button>
+        {!started && (
+          <div className="suggested-questions">
+            {SUGGESTED_QUESTIONS.map((q, i) => (
+              <button
+                key={i}
+                className={`suggested-pill ${i === 0 ? 'primary' : ''}`}
+                onClick={() => send(q)}
+                title={q}
+              >
+                {truncateQuestion(q)}
+              </button>
+            ))}
           </div>
         )}
 

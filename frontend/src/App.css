@@ -952,33 +952,36 @@ html, body {
   padding: 16px;
 }
 
-/* suggested question as a plain text link above the input */
-.chat-suggested {
-  margin-bottom: 16px;
+/* starter pills — clickable text cards shown before the first question */
+.suggested-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
 }
-.chat-suggested-label {
-  display: block;
-  font-family: var(--font-machine);
-  font-size: 0.65rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  margin-bottom: 8px;
-}
-.chat-suggested-link {
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  color: var(--accent-amber);
+.suggested-pill {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  color: var(--text-secondary);
   font-family: var(--font-human);
-  font-size: 13.5px;
-  line-height: 1.5;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  cursor: pointer;
   text-align: left;
-  border-bottom: 1px solid var(--accent-amber-dim);
-  transition: border-color 0.15s;
+  transition: border-color 200ms ease, color 200ms ease;
 }
-.chat-suggested-link:hover { border-bottom-color: var(--accent-amber); }
+.suggested-pill:hover {
+  border-color: var(--accent-amber);
+  color: var(--text-primary);
+}
+/* the 3am-alert lead — slightly brighter so it reads as the obvious first try */
+.suggested-pill.primary {
+  border-color: var(--accent-amber-dim);
+  color: var(--text-primary);
+}
+.suggested-pill.primary:hover { border-color: var(--accent-amber); }
 
 .chat-messages { display: flex; flex-direction: column; gap: 14px; }
 
