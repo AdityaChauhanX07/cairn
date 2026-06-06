@@ -60,6 +60,12 @@ const SECTION_META: Record<string, { accent: string; summary: (c: Counts) => str
     accent: 'var(--type-saved-search)',
     summary: (c) => (c.owners ? `${c.owners} owner${c.owners !== 1 ? 's' : ''}` : 'ownership signals'),
   },
+  'AI & ML Footprint': {
+    accent: 'var(--accent-violet)',
+    summary: (c) =>
+      `${c.mltkAlgorithms} algorithm${c.mltkAlgorithms !== 1 ? 's' : ''}` +
+      (c.mltkModels ? `, ${c.mltkModels} model${c.mltkModels !== 1 ? 's' : ''}` : ', no trained models'),
+  },
 };
 
 interface Counts {
@@ -72,6 +78,8 @@ interface Counts {
   critical: number;
   owners: number;
   total: number;
+  mltkAlgorithms: number;
+  mltkModels: number;
 }
 
 function looksCritical(node: SnapNode): boolean {
@@ -86,6 +94,8 @@ function deriveCounts(guide: Guide): Counts {
   const c: Counts = {
     index: 0, alert: 0, saved_search: 0, macro: 0, lookup: 0, dashboard: 0,
     critical: 0, owners: 0, total: nodes.length,
+    mltkAlgorithms: guide.mltk_algorithm_count ?? 0,
+    mltkModels: guide.mltk_model_count ?? 0,
   };
   const owners = new Set<string>();
   for (const n of nodes) {
@@ -106,6 +116,7 @@ function navCount(title: string, c: Counts): string {
     case "Your Team's Dashboards": return String(c.dashboard);
     case 'The Shorthand': return String(c.macro + c.lookup);
     case 'Who Knows What': return c.owners ? String(c.owners) : '';
+    case 'AI & ML Footprint': return c.mltkAlgorithms ? String(c.mltkAlgorithms) : '';
     default: return '';
   }
 }

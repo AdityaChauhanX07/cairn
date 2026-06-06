@@ -134,6 +134,11 @@ class OnboardingGuide:
     # graph) so the UI can draw the dependency picture without re-filtering.
     graph_nodes: list[dict[str, Any]] = field(default_factory=list)
     graph_edges: list[dict[str, Any]] = field(default_factory=list)
+    # MLTK footprint counts — surfaced so the UI can badge the "AI & ML
+    # Footprint" nav item without re-parsing the section markdown. Both 0 when
+    # the AI Toolkit isn't installed (and the section is then absent entirely).
+    mltk_algorithm_count: int = 0
+    mltk_model_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -202,6 +207,10 @@ class Orchestrator:
         self._guide: OnboardingGuide | None = None
         self._starter_kit: StarterKit | None = None
         self._findings: FindingsReport | None = None
+        # MLTK / AI-Toolkit footprint, populated during explore (empty when the
+        # toolkit isn't installed — the guide section is skipped in that case).
+        self._mltk_algorithms: list[dict[str, Any]] = []
+        self._mltk_models: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
 
     # ---- public accessors ----
@@ -455,6 +464,21 @@ class Orchestrator:
         ):
             yield _finding_to_event(AgentPhase.INVESTIGATE, finding)
 
+        # ---- AI / ML footprint (optional — the AI Toolkit may not be installed) ----
+        await self._fetch_mltk_footprint()
+        if self._mltk_algorithms or self._mltk_models:
+            yield AgentEvent(
+                phase=AgentPhase.INVESTIGATE,
+                message=(
+                    f"mapped the AI/ML footprint: {len(self._mltk_algorithms)} MLTK "
+                    f"algorithm(s), {len(self._mltk_models)} trained model(s)"
+                ),
+                data={
+                    "mltk_algorithms": len(self._mltk_algorithms),
+                    "mltk_models": len(self._mltk_models),
+                },
+            )
+
         yield self._with_graph(
             AgentEvent(
                 phase=AgentPhase.DONE,
@@ -462,6 +486,50 @@ class Orchestrator:
                 data={"summary": self._graph.summary()},
             )
         )
+
+    # ---- MLTK / AI footprint ----
+
+    async def _fetch_mltk_footprint(self) -> None:
+        """Fetch the AI-Toolkit footprint (available algorithms + trained models).
+
+        Best-effort: if MLTK isn't installed the MCP calls error or return
+        nothing, leaving both lists empty — which makes ``_run_generate_guide``
+        skip the "AI & ML Footprint" section entirely. The two kinds are probed
+        independently so an empty ``mltk_models`` (common — algorithms ship with
+        the app, trained models don't) doesn't suppress the algorithm list.
+        """
+        try:
+            self._mltk_algorithms = await self._mcp.get_knowledge_objects(
+                kind="mltk_algorithms"
+            )
+        except Exception as exc:  # noqa: BLE001 - toolkit absent / kind unsupported
+            logger.info("mltk_algorithms unavailable (AI Toolkit not installed?): %s", exc)
+            self._mltk_algorithms = []
+        try:
+            self._mltk_models = await self._mcp.get_knowledge_objects(kind="mltk_models")
+        except Exception as exc:  # noqa: BLE001
+            logger.info("mltk_models unavailable: %s", exc)
+            self._mltk_models = []
+
+    @staticmethod
+    def _extract_mltk_names(data: Any) -> list[str]:
+        """Pull algorithm/model names out of an MCP knowledge-objects response.
+
+        The client already normalizes to a list of dicts, but we stay defensive
+        against the raw ``{"results": [...]}`` / ``{"entries": [...]}`` shapes too.
+        """
+        if isinstance(data, list):
+            return [
+                item.get("name", str(item)) if isinstance(item, dict) else str(item)
+                for item in data
+            ]
+        if isinstance(data, dict):
+            items = data.get("results", data.get("entries", data.get("items", [])))
+            return [
+                item.get("name", str(item)) if isinstance(item, dict) else str(item)
+                for item in items
+            ]
+        return []
 
     # ---- Reason step ----
 
@@ -514,15 +582,28 @@ class Orchestrator:
         sections: dict[str, str] = {}
         markdown_chunks: list[str] = []
 
-        for title, context_fn, prompt_fn in _GUIDE_SECTIONS:
+        # The AI & ML Footprint section only makes sense when the AI Toolkit is
+        # actually installed — skip it entirely otherwise rather than writing an
+        # empty "0 algorithms" section.
+        section_specs = [
+            spec
+            for spec in _GUIDE_SECTIONS
+            if spec[0] != _MLTK_SECTION_TITLE
+            or self._mltk_algorithms
+            or self._mltk_models
+        ]
+
+        for title, context_fn, prompt_fn in section_specs:
             yield AgentEvent(
                 phase=AgentPhase.SYNTHESIZE,
                 message=f"writing section: {title}",
             )
             context = context_fn(self)
             prompt = prompt_fn(title, context)
+            # The footprint section is meant to be concise.
+            max_tokens = 800 if title == _MLTK_SECTION_TITLE else 1000
             try:
-                body = (await self._llm_call(prompt, max_tokens=1000)).strip()
+                body = (await self._llm_call(prompt, max_tokens=max_tokens)).strip()
             except Exception as exc:
                 logger.warning("section %r failed: %s", title, exc)
                 yield AgentEvent(
@@ -565,6 +646,8 @@ class Orchestrator:
             graph_snapshot=graph_snapshot,
             graph_nodes=rel["nodes"],
             graph_edges=rel["edges"],
+            mltk_algorithm_count=len(self._mltk_algorithms),
+            mltk_model_count=len(self._mltk_models),
         )
         yield AgentEvent(
             phase=AgentPhase.DONE,
@@ -1004,6 +1087,16 @@ class Orchestrator:
     def _ctx_ownership(self) -> dict[str, Any]:
         return {"signals": self._collect_ownership_signals()}
 
+    def _ctx_mltk(self) -> dict[str, Any]:
+        algorithms = self._extract_mltk_names(self._mltk_algorithms)
+        models = self._extract_mltk_names(self._mltk_models)
+        return {
+            "algorithm_count": len(algorithms),
+            "model_count": len(models),
+            "algorithm_names": algorithms,
+            "models": models,
+        }
+
     # ---- Graph-derived context helpers ----
 
     def _collect_alert_chains(self) -> list[dict[str, Any]]:
@@ -1401,9 +1494,33 @@ def _prompt_ownership(title: str, ctx: dict[str, Any]) -> str:
     )
 
 
+def _prompt_mltk(title: str, ctx: dict[str, Any]) -> str:
+    algorithm_count = ctx.get("algorithm_count", 0)
+    model_count = ctx.get("model_count", 0)
+    algorithm_names = ", ".join(ctx.get("algorithm_names", [])) or "none"
+    models = ctx.get("models", [])
+    model_list_or_none = ", ".join(models) if models else "none"
+    return (
+        f"You are writing the '{title}' section of an onboarding guide for a newcomer. "
+        f"This Splunk environment has the AI Toolkit (MLTK) installed with {algorithm_count} machine learning algorithms available "
+        f"and {model_count} trained models deployed. "
+        f"Algorithms available include: {algorithm_names}. "
+        f"Trained models: {model_list_or_none}. "
+        "Write a brief, practical overview for a newcomer: what ML capabilities are available in this environment, "
+        "what the trained models do (if any), and what kinds of analysis the team could build with the available algorithms. "
+        "Group the algorithms by purpose (anomaly detection, forecasting, clustering, classification, regression). "
+        "If no models are trained, note that the toolkit is available but not yet utilized, and suggest 2-3 practical "
+        "use cases based on the data in the environment (auth_events for login anomaly detection, app_metrics for forecasting, etc.). "
+        "Output only Markdown body — do NOT include the H2 header."
+    )
+
+
 # Title of the alerts section — referenced both in the section table and in
 # the synthesis loop (which appends dependency trees to this section only).
 _ALERTS_SECTION_TITLE = "Critical Alerts & What They Mean"
+# Title of the optional AI-Toolkit section — gated out in _run_generate_guide
+# when no MLTK footprint was discovered.
+_MLTK_SECTION_TITLE = "AI & ML Footprint"
 
 # Edge types that describe metadata (ownership / app placement) rather than a
 # data-dependency, so they're omitted from the dependency-chain tree view.
@@ -1419,6 +1536,7 @@ _GUIDE_SECTIONS: tuple[tuple[str, Any, Any], ...] = (
     ("Your Team's Dashboards", Orchestrator._ctx_dashboards, _prompt_dashboards),
     ("The Shorthand", Orchestrator._ctx_shorthand, _prompt_shorthand),
     ("Who Knows What", Orchestrator._ctx_ownership, _prompt_ownership),
+    (_MLTK_SECTION_TITLE, Orchestrator._ctx_mltk, _prompt_mltk),
 )
 
 

@@ -48,6 +48,9 @@ export interface Guide {
   graph_snapshot?: Record<string, unknown>;
   graph_nodes?: GraphNode[];
   graph_edges?: GraphEdge[];
+  // MLTK / AI-Toolkit footprint counts (0 / absent when MLTK isn't installed).
+  mltk_algorithm_count?: number;
+  mltk_model_count?: number;
 }
 
 export interface LiveQuery {
