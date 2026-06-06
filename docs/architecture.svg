@@ -1,0 +1,189 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" width="1200" height="620">
+  <defs>
+    <style>
+      .bg { fill: #ffffff; }
+      .box { fill: none; stroke: #1a1a1a; stroke-width: 1.2; rx: 2; }
+      .box-dashed { fill: none; stroke: #bbb; stroke-width: 1; stroke-dasharray: 5,4; rx: 2; }
+      .label { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 600; font-size: 14px; fill: #1a1a1a; }
+      .sublabel { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 400; font-size: 11px; fill: #888; }
+      .mono { font-family: 'SF Mono', 'Menlo', 'Courier New', monospace; font-weight: 400; font-size: 10px; fill: #555; }
+      .title { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 700; font-size: 18px; fill: #1a1a1a; }
+      .section { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 600; font-size: 9px; fill: #999; letter-spacing: 2px; }
+      .arrow { stroke: #1a1a1a; stroke-width: 1; fill: none; marker-end: url(#ah); }
+      .arrow-gray { stroke: #ccc; stroke-width: 1; fill: none; marker-end: url(#ahg); }
+      .note { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 400; font-size: 10px; fill: #aaa; }
+      .arrow-label { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 500; font-size: 9.5px; fill: #888; }
+    </style>
+    <marker id="ah" markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto">
+      <polygon points="0 0, 6 2.5, 0 5" fill="#1a1a1a" />
+    </marker>
+    <marker id="ahg" markerWidth="6" markerHeight="5" refX="5.5" refY="2.5" orient="auto">
+      <polygon points="0 0, 6 2.5, 0 5" fill="#ccc" />
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="620" />
+
+  <!-- Title -->
+  <text class="title" x="48" y="42">cairn. architecture</text>
+  <text class="note" x="48" y="60">read-only data flow · 13 MCP tools · no writes to Splunk</text>
+
+
+  <!-- ===== FRONTEND ===== -->
+  <text class="section" x="48" y="100">FRONTEND</text>
+  <rect class="box" x="48" y="112" width="260" height="230" />
+  <text class="label" x="68" y="138">React + Vite</text>
+  <text class="sublabel" x="68" y="154">TypeScript SPA</text>
+
+  <text class="mono" x="68" y="182">ExploreView</text>
+  <text class="sublabel" x="180" y="182">live agent feed</text>
+
+  <text class="mono" x="68" y="202">GuideView</text>
+  <text class="sublabel" x="180" y="202">6-section guide</text>
+
+  <text class="mono" x="68" y="222">FindingsView</text>
+  <text class="sublabel" x="180" y="222">hygiene flags</text>
+
+  <text class="mono" x="68" y="242">StarterKitView</text>
+  <text class="sublabel" x="180" y="242">generated assets</text>
+
+  <text class="mono" x="68" y="262">ChatView</text>
+  <text class="sublabel" x="180" y="262">Q&amp;A</text>
+
+  <text class="mono" x="68" y="282">RelationshipGraph</text>
+  <text class="sublabel" x="180" y="282">interactive SVG</text>
+
+  <text class="sublabel" x="68" y="326">SSE streaming + REST</text>
+
+
+  <!-- ===== BACKEND ===== -->
+  <text class="section" x="430" y="100">BACKEND</text>
+  <rect class="box" x="430" y="112" width="310" height="430" />
+  <text class="label" x="450" y="138">Python + FastAPI</text>
+
+  <!-- Orchestrator -->
+  <rect class="box-dashed" x="450" y="154" width="270" height="48" />
+  <text class="mono" x="466" y="174">Agent Orchestrator</text>
+  <text class="sublabel" x="466" y="190">orient · reason · investigate · decide</text>
+
+  <!-- Sub-components -->
+  <rect class="box-dashed" x="450" y="216" width="130" height="34" />
+  <text class="mono" x="466" y="238">Reasoning Loop</text>
+
+  <rect class="box-dashed" x="590" y="216" width="130" height="34" />
+  <text class="mono" x="606" y="238">Graph Builder</text>
+
+  <!-- Modes -->
+  <text class="sublabel" x="450" y="278">Three modes</text>
+
+  <rect class="box-dashed" x="450" y="286" width="86" height="34" />
+  <text class="mono" x="466" y="308">A  explain</text>
+
+  <rect class="box-dashed" x="542" y="286" width="86" height="34" />
+  <text class="mono" x="558" y="308">B  flag</text>
+
+  <rect class="box-dashed" x="634" y="286" width="86" height="34" />
+  <text class="mono" x="650" y="308">C  build</text>
+
+  <!-- MCP Client -->
+  <rect class="box-dashed" x="450" y="338" width="270" height="34" />
+  <text class="mono" x="466" y="358">MCP Client</text>
+  <text class="sublabel" x="560" y="358">read-only, streamable HTTP</text>
+
+  <!-- Q&A + Export -->
+  <rect class="box-dashed" x="450" y="390" width="130" height="34" />
+  <text class="mono" x="466" y="412">Q&amp;A Engine</text>
+
+  <rect class="box-dashed" x="590" y="390" width="130" height="34" />
+  <text class="mono" x="606" y="412">Export Engine</text>
+
+  <!-- API -->
+  <rect class="box-dashed" x="450" y="442" width="270" height="34" />
+  <text class="mono" x="466" y="462">API Routes</text>
+  <text class="sublabel" x="556" y="462">/connect /explore /guide /ask</text>
+
+  <!-- SSE -->
+  <rect class="box-dashed" x="450" y="494" width="270" height="34" />
+  <text class="mono" x="466" y="514">SSE Streaming</text>
+  <text class="sublabel" x="574" y="514">real-time events to UI</text>
+
+
+  <!-- ===== LLM ===== -->
+  <text class="section" x="860" y="100">LLM</text>
+  <rect class="box" x="860" y="112" width="280" height="100" />
+  <text class="label" x="880" y="138">Groq API</text>
+  <text class="sublabel" x="880" y="156">llama-3.3-70b-versatile</text>
+
+  <text class="mono" x="880" y="184">reasoning</text>
+  <text class="mono" x="960" y="184">synthesis</text>
+  <text class="mono" x="1040" y="184">SPL gen</text>
+  <text class="sublabel" x="880" y="202">rate-limited, token-capped</text>
+
+
+  <!-- ===== SPLUNK ===== -->
+  <text class="section" x="860" y="250">SPLUNK</text>
+  <rect class="box" x="860" y="262" width="280" height="330" />
+  <text class="label" x="880" y="288">Splunk Enterprise</text>
+  <text class="sublabel" x="880" y="306">on-prem, Developer License</text>
+
+  <!-- MCP Server -->
+  <rect class="box-dashed" x="880" y="322" width="240" height="30" />
+  <text class="mono" x="896" y="342">MCP Server (Splunkbase)</text>
+
+  <!-- splunk_ tools in single column -->
+  <text class="sublabel" x="880" y="378">splunk_ (9 tools)</text>
+  <text class="mono" x="880" y="396">get_info</text>
+  <text class="mono" x="880" y="410">get_indexes</text>
+  <text class="mono" x="880" y="424">get_index_info</text>
+  <text class="mono" x="880" y="438">get_metadata</text>
+  <text class="mono" x="880" y="452">get_knowledge_objects</text>
+  <text class="mono" x="880" y="466">get_user_list</text>
+  <text class="mono" x="880" y="480">get_user_info</text>
+  <text class="mono" x="880" y="494">get_kv_store_collections</text>
+  <text class="mono" x="880" y="508">run_query</text>
+
+  <!-- saia_ tools -->
+  <text class="sublabel" x="880" y="534">saia_ (4 tools)</text>
+  <text class="mono" x="880" y="550">explain_spl</text>
+  <text class="mono" x="880" y="564">generate_spl</text>
+  <text class="mono" x="980" y="550">optimize_spl</text>
+  <text class="mono" x="980" y="564">ask_splunk_question</text>
+
+  <!-- Data -->
+  <text class="sublabel" x="880" y="584">indexes · knowledge objects · _audit · MLTK</text>
+
+
+  <!-- ===== ARROWS ===== -->
+
+  <!-- Frontend -> Backend -->
+  <line class="arrow" x1="308" y1="230" x2="430" y2="230" />
+  <text class="arrow-label" x="340" y="222">SSE + REST</text>
+
+  <!-- Backend -> LLM -->
+  <line class="arrow" x1="740" y1="170" x2="860" y2="170" />
+  <text class="arrow-label" x="764" y="162">reasoning</text>
+
+  <!-- Backend -> Splunk -->
+  <line class="arrow" x1="740" y1="360" x2="860" y2="360" />
+  <text class="arrow-label" x="764" y="352">MCP, 13 tools</text>
+
+
+  <!-- ===== OUTPUTS ===== -->
+  <text class="section" x="48" y="404">OUTPUTS</text>
+  <rect class="box-dashed" x="48" y="416" width="260" height="130" />
+
+  <text class="mono" x="68" y="442">Mode A</text>
+  <text class="sublabel" x="130" y="442">onboarding guide, 6 sections</text>
+
+  <text class="mono" x="68" y="466">Mode B</text>
+  <text class="sublabel" x="130" y="466">findings + fix_spl remediation</text>
+
+  <text class="mono" x="68" y="490">Mode C</text>
+  <text class="sublabel" x="130" y="490">starter SPL, runbooks, XML</text>
+
+  <text class="mono" x="68" y="514">Export</text>
+  <text class="sublabel" x="130" y="514">markdown, HTML, Simple XML</text>
+
+  <line class="arrow-gray" x1="178" y1="342" x2="178" y2="416" />
+
+</svg>
