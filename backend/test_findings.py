@@ -79,10 +79,16 @@ async def _run() -> int:
     orch = Orchestrator(mcp_client=object(), llm=object())  # type: ignore[arg-type]
     orch._graph = _build_graph()  # swap in the synthetic graph
 
-    async def _no_opt(spl: str) -> str:  # stub the LLM-tuned fix_spl path
-        return ""
+    # Stub the LLM-tuned fix_spl paths (no Splunk / no LLM). Signatures must
+    # match how the findings loop calls them (optimize takes max_tokens).
+    async def _fake_optimize(spl: str, max_tokens: int = 300) -> str:
+        return f"OPTIMIZED: {spl}"
 
-    orch._optimize_spl_with_fallback = _no_opt  # type: ignore[assignment]
+    async def _fake_generate(description: str) -> str:
+        return "index=auth_events action=failure | stats count by user"
+
+    orch._optimize_spl_with_fallback = _fake_optimize  # type: ignore[assignment]
+    orch._generate_spl_with_fallback = _fake_generate  # type: ignore[assignment]
 
     events = [ev async for ev in orch.generate_findings()]
     report = orch.findings
@@ -116,6 +122,17 @@ async def _run() -> int:
     # Every finding carries a non-empty remediation.
     for f in report.findings:
         assert f.fix.strip(), f"finding {f.id} has empty fix"
+
+    # Flag -> Fix: alert findings carry a generated/optimized fix_spl; orphans don't.
+    assert by_id["empty_index:Legacy Windows Event Monitor:legacy_winlogs"].fix_spl, (
+        "empty-index finding should carry a generated fix_spl"
+    )
+    assert by_id["no_action:Disk Space Warning"].fix_spl.startswith("OPTIMIZED:"), (
+        "no-action finding should carry an optimized fix_spl"
+    )
+    assert by_id["orphan:macro:deprecated_geoip_filter"].fix_spl == "", (
+        "orphaned-object findings should not carry a fix_spl"
+    )
 
     # Dead-node ids include the orphans + the empty index.
     assert report.dead_node_ids, "no dead_node_ids collected"

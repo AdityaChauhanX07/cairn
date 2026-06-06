@@ -71,6 +71,10 @@ _EXPECTED_ORPHANS: frozenset[str] = frozenset({
     "service_owners",           # same, without the file extension
 })
 
+# Cap on LLM-backed ``fix_spl`` generations during a single findings run, so a
+# large/noisy environment can't exhaust the Groq rate limit on remediations.
+_MAX_FINDING_FIX_SPL_CALLS = 4
+
 
 # User-facing fallbacks shown when the LLM can't be reached (e.g. Groq's
 # free-tier daily/RPM cap is hit and retries are exhausted). We never surface
@@ -336,7 +340,7 @@ class Orchestrator:
 
     # ---- SPL optimization (MCP-first, LLM fallback) ----
 
-    async def _optimize_spl_with_fallback(self, spl: str) -> str:
+    async def _optimize_spl_with_fallback(self, spl: str, max_tokens: int = 500) -> str:
         """Suggest a faster/cleaner version of ``spl``, preferring ``saia_optimize_spl``.
 
         Falls back to a rate-limited Groq call on failure. The result is a
@@ -359,7 +363,49 @@ class Orchestrator:
             "query. Explain what you changed and why in one sentence, then give "
             f"the optimized SPL.\n\nOriginal SPL: {spl}"
         )
-        return (await self._llm_call(prompt, max_tokens=500)).strip()
+        return (await self._llm_call(prompt, max_tokens=max_tokens)).strip()
+
+    # ---- Flag -> Fix: generated SPL remediations for findings ----
+
+    async def _safe_generate_fix(self, description: str) -> str:
+        """Best-effort generated SPL fix; never raises (returns '' on failure)."""
+        try:
+            return await self._generate_spl_with_fallback(description)
+        except Exception as exc:  # noqa: BLE001 - a finding's fix_spl is optional
+            logger.warning("fix_spl generation failed: %s", exc)
+            return ""
+
+    async def _safe_optimize_fix(self, spl: str) -> str:
+        """Best-effort optimized SPL fix; never raises (returns '' on failure)."""
+        try:
+            return await self._optimize_spl_with_fallback(spl, max_tokens=300)
+        except Exception as exc:  # noqa: BLE001 - a finding's fix_spl is optional
+            logger.warning("fix_spl optimization failed: %s", exc)
+            return ""
+
+    def environment_counts(self) -> dict[str, int]:
+        """User-facing object counts by type — backs the export quick-reference.
+
+        Skips placeholders (referenced-but-undiscovered) and Splunk-internal
+        ``_*`` indexes so the numbers match what the guide actually documents.
+        """
+        counts = {
+            "index": 0,
+            "alert": 0,
+            "saved_search": 0,
+            "macro": 0,
+            "lookup": 0,
+            "dashboard": 0,
+        }
+        for node in self._graph.nodes():
+            if node.properties.get("placeholder"):
+                continue
+            kind = node.type.value
+            if kind == "index" and node.name.startswith("_"):
+                continue
+            if kind in counts:
+                counts[kind] += 1
+        return counts
 
     # ---- The main exploration flow ----
 
@@ -918,8 +964,23 @@ class Orchestrator:
 
         # ---- 2. Alerts: empty index / no action / no owner ----
         yield AgentEvent(AgentPhase.SYNTHESIZE, "auditing alerts for hygiene issues...")
+
+        # Flag -> Fix: for alert findings we generate a tuned ``fix_spl`` via
+        # saia_generate_spl / saia_optimize_spl (LLM fallback). Cap the number of
+        # LLM round-trips so a noisy environment can't blow the rate limit — once
+        # the budget is spent, findings still carry their deterministic text fix.
+        fix_calls = 0
+        populated_indexes = [
+            n.name
+            for n in self._graph.nodes_by_type(NodeType.INDEX)
+            if not n.properties.get("placeholder")
+            and not n.name.startswith("_")
+            and int(n.properties.get("totalEventCount") or 0) > 0
+        ]
+
         for alert in self._graph.nodes_by_type(NodeType.ALERT):
             name = alert.name
+            alert_spl = alert.properties.get("spl") or ""
 
             # Only flag hygiene on *tracked* alerts. Scheduled reports surface as
             # alert nodes too (non-empty alert_type), but having no action / no
@@ -938,6 +999,16 @@ class Orchestrator:
                 event_count = index_node.properties.get("totalEventCount")
                 if event_count is None or int(event_count) != 0:
                     continue
+                # Flag -> Fix: generate the alert's SPL repointed at a real index.
+                fix_spl = ""
+                if alert_spl and fix_calls < _MAX_FINDING_FIX_SPL_CALLS:
+                    fix_calls += 1
+                    populated = ", ".join(populated_indexes) or "(no populated index found)"
+                    fix_spl = await self._safe_generate_fix(
+                        f"Rewrite this Splunk alert to read from a populated index "
+                        f"instead of the empty '{index_node.name}' (populated indexes "
+                        f"in this environment: {populated}): {alert_spl}"
+                    )
                 report.findings.append(
                     HygieneFinding(
                         id=f"empty_index:{name}:{index_node.name}",
@@ -958,6 +1029,7 @@ class Orchestrator:
                             f"Repoint alert '{name}' to a populated index, or decommission "
                             f"it if '{index_node.name}' is retired."
                         ),
+                        fix_spl=fix_spl,
                     )
                 )
                 dead.append(index_node.id)
@@ -965,6 +1037,13 @@ class Orchestrator:
             # 2b. Alert with no action configured.
             actions = alert.properties.get("actions")
             if not (isinstance(actions, str) and actions.strip()):
+                # Flag -> Fix: an alert action isn't expressed in SPL, so instead
+                # offer a tuned version of the alert's query (a cleaner/faster
+                # search to pair with the action they'll add).
+                fix_spl = ""
+                if alert_spl and fix_calls < _MAX_FINDING_FIX_SPL_CALLS:
+                    fix_calls += 1
+                    fix_spl = await self._safe_optimize_fix(alert_spl)
                 report.findings.append(
                     HygieneFinding(
                         id=f"no_action:{name}",
@@ -981,6 +1060,7 @@ class Orchestrator:
                             f"Add an alert action to '{name}' (email, webhook, or a ticketing "
                             f"integration) so a trigger reaches a human."
                         ),
+                        fix_spl=fix_spl,
                     )
                 )
 
