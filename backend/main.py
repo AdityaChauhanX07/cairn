@@ -28,7 +28,6 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    settings = get_settings()
     app = FastAPI(
         title="Cairn",
         description=(
@@ -38,11 +37,18 @@ def create_app() -> FastAPI:
         ),
         version="0.1.0",
         lifespan=lifespan,
+        # Don't 307-redirect /api/connect <-> /api/connect/. A redirect on the
+        # CORS preflight (OPTIONS) is rejected by the browser ("Redirect is not
+        # allowed for a preflight request"), so we match paths exactly instead.
+        redirect_slashes=False,
     )
 
+    # CORS first, so the preflight is answered here and never falls through to
+    # routing. Open for local development (the agent is a single-tenant dev tool
+    # reached over localhost); tighten allow_origins for any shared deployment.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

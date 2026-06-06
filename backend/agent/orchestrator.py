@@ -1484,7 +1484,9 @@ class Orchestrator:
             "environment, generate a short SPL query to answer it.\n\n"
             f"Available indexes:\n{json.dumps(index_summaries, indent=2)}\n\n"
             f"Question: {question}\n\n"
-            "Respond with ONLY the SPL query, nothing else. Include `| head 100` "
+            "Respond with ONLY the raw SPL query. Do NOT wrap it in backticks, "
+            "code fences, or any markdown formatting. Do NOT use ``` or `. Just the "
+            "plain SPL text. Include `| head 100` "
             "at the end if the query would return raw events (omit for aggregations). "
             "If the question can't be answered with a query, respond with NO_QUERY."
         )
@@ -1711,6 +1713,16 @@ def _clean_spl_response(text: str) -> str:
     # Drop trailing fence if any.
     if s.endswith("```"):
         s = s[: -3].rstrip()
+    s = s.strip()
+    # Unwrap inline-code backticks that wrap the whole query.
+    # LLMs sometimes emit `index=... | ...` — Splunk reads ` as macro syntax.
+    # Leave real macro calls (`my_macro`) alone: they're single tokens without spaces/pipes.
+    if s.startswith("`") and not s.startswith("```"):
+        end = s.find("`", 1)
+        if end != -1:
+            inner = s[1:end]
+            if any(c in inner for c in " |="):  # looks like a query, not a macro
+                s = (inner + s[end + 1:]).strip()
     return s.strip()
 
 
