@@ -90,6 +90,8 @@ desktop.ini
 $RECYCLE.BIN/
 
 # ---- Cairn-specific ----
+# Standalone design/reference mockup, not part of the live app.
+claude-design-ui-code/
 *.log
 logs/
 *.db

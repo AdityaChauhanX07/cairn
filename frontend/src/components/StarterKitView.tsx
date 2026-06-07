@@ -1,202 +1,217 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { downloadDashboardXml } from '../utils/api';
+import { useCairn } from '../context/CairnContext';
+import { CodeBlock, Eyebrow, Icons, SeverityBadge } from './Primitives';
 import { SkeletonText } from './Skeleton';
-import type { StarterKit, GeneratedSPL, Runbook, DashboardPanel } from '../types';
+import type { GeneratedSPL, Runbook, DashboardPanel } from '../types';
+import type { Screen } from '../App';
 
 interface Props {
-  kit: StarterKit | null;
-  generating: boolean;
-  progress: string[];
-  error: string;
-  onBack: () => void;
+  goto: (screen: Screen) => void;
 }
 
-// Category tints for the query chips — same palette as the index tiles, plus a
-// violet for "troubleshooting" which has no index-tile equivalent.
-const CATEGORY_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  security: { bg: 'rgba(248, 113, 113, 0.12)', border: 'rgba(248, 113, 113, 0.35)', text: '#f87171' },
-  application: { bg: 'rgba(96, 165, 250, 0.12)', border: 'rgba(96, 165, 250, 0.35)', text: '#60a5fa' },
-  infrastructure: { bg: 'rgba(52, 211, 153, 0.12)', border: 'rgba(52, 211, 153, 0.35)', text: '#34d399' },
-  troubleshooting: { bg: 'rgba(167, 139, 250, 0.12)', border: 'rgba(167, 139, 250, 0.35)', text: '#a78bfa' },
-  other: { bg: 'rgba(160, 160, 176, 0.08)', border: 'rgba(160, 160, 176, 0.25)', text: '#a0a0b0' },
+type Tab = 'queries' | 'runbooks' | 'dashboard';
+const TABS: { k: Tab; label: string; icon: typeof Icons.search }[] = [
+  { k: 'queries', label: 'Generated Queries', icon: Icons.search },
+  { k: 'runbooks', label: 'Alert Runbooks', icon: Icons.shield },
+  { k: 'dashboard', label: 'Dashboard Skeleton', icon: Icons.graph },
+];
+const Q_CATS = ['all', 'security', 'application', 'infrastructure', 'troubleshooting'];
+const CAT_TONE: Record<string, string> = {
+  security: 'var(--sev-high)', application: 'var(--n-index)', infrastructure: 'var(--n-dash)', troubleshooting: 'var(--n-macro)',
 };
+const VIZ_LABEL: Record<string, string> = { timechart: 'timechart', table: 'table', single: 'single value', bar: 'bar chart' };
 
-// Stable category ordering so the most safety-relevant queries lead.
-const CATEGORY_ORDER = ['security', 'application', 'infrastructure', 'troubleshooting', 'other'];
+export default function StarterKitView({ goto }: Props) {
+  const { kit, kitGenerating, kitProgress, kitError, ensureKit } = useCairn();
+  const [tab, setTab] = useState<Tab>('queries');
+  const [cat, setCat] = useState('all');
 
-export default function StarterKitView({ kit, generating, progress, error, onBack }: Props) {
+  useEffect(() => { ensureKit(); }, [ensureKit]);
+
+  const queries = !kit ? [] : cat === 'all' ? kit.generated_queries : kit.generated_queries.filter((q) => q.category === cat);
+
   return (
-    <div className="starter-kit">
-      <div className="starter-kit-head">
-        <button className="starter-back" onClick={onBack}>← Back to Guide</button>
-        <h1 className="guide-title">Starter Kit</h1>
-        <p className="starter-kit-sub">
-          Tailored SPL, per-alert runbooks, and an importable dashboard skeleton —
-          generated from your environment.
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ maxWidth: 860, margin: '0 auto', padding: '40px 48px 120px' }}>
+        <Eyebrow>mode c · starter kit</Eyebrow>
+        <h1 className="display" style={{ fontSize: 38, marginTop: 14 }}>A running start.</h1>
+        <p style={{ color: 'var(--text-2)', fontSize: 16, maxWidth: 560, marginTop: 14 }}>
+          Tailored SPL, per-alert runbooks and an importable dashboard — all generated from what cairn actually found in
+          your environment.
         </p>
-      </div>
 
-      {error && (
-        <div className="error-banner" style={{ marginBottom: 20 }}>
-          <span className="error-mark">!</span>
-          <span>
-            <span className="error-title">Starter kit generation stalled</span>
-            <span className="error-hint">{error}</span>
-          </span>
-        </div>
-      )}
-
-      {!kit && generating && (
-        <div className="starter-progress">
-          <div className="starter-progress-status">
-            <span className="pulse-dot" />
-            {progress[progress.length - 1] ?? 'generating starter kit…'}
+        {kitError && (
+          <div style={{ marginTop: 20, color: 'var(--sev-high)', fontFamily: 'var(--mono)', fontSize: 13 }}>
+            starter kit generation stalled — {kitError}
           </div>
-          <SkeletonText lines={6} />
-        </div>
-      )}
+        )}
 
-      {kit && (
-        <>
-          <QueriesBlock queries={kit.generated_queries} />
-          <RunbooksBlock runbooks={kit.runbooks} />
-          <DashboardBlock panels={kit.dashboard_panels} hasXml={!!kit.dashboard_xml} />
-        </>
-      )}
+        {!kit && kitGenerating && (
+          <div style={{ marginTop: 28 }}>
+            <div className="row gap-2" style={{ marginBottom: 14, color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 12.5 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--live)', animation: 'blink 1.2s infinite' }} />
+              {kitProgress[kitProgress.length - 1] ?? 'generating starter kit…'}
+            </div>
+            <SkeletonText lines={7} />
+          </div>
+        )}
+
+        {kit && (
+          <>
+            {/* tabs */}
+            <div className="row gap-2" style={{ marginTop: 28, padding: 4, background: 'var(--surface-1)', border: '1px solid var(--line)', borderRadius: 'var(--r-md)', width: 'fit-content' }}>
+              {TABS.map((t) => {
+                const count = t.k === 'queries' ? kit.generated_queries.length : t.k === 'runbooks' ? kit.runbooks.length : kit.dashboard_panels.length;
+                const TabIcon = t.icon;
+                return (
+                  <button
+                    key={t.k}
+                    onClick={() => setTab(t.k)}
+                    className="row gap-2"
+                    style={{
+                      padding: '9px 16px', borderRadius: 'var(--r-sm)', border: 'none', cursor: 'pointer',
+                      fontFamily: 'var(--sans)', fontSize: 13.5, fontWeight: tab === t.k ? 600 : 400,
+                      background: tab === t.k ? 'var(--ember)' : 'transparent', color: tab === t.k ? '#1a0f08' : 'var(--text-2)', transition: 'all .15s',
+                    }}
+                  >
+                    <TabIcon size={15} /> {t.label}
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: 11, opacity: 0.75 }}>{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* QUERIES */}
+            {tab === 'queries' && (
+              <div style={{ marginTop: 26 }}>
+                <div className="row gap-2" style={{ flexWrap: 'wrap', marginBottom: 18 }}>
+                  {Q_CATS.map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => setCat(c)}
+                      style={{
+                        fontFamily: 'var(--mono)', fontSize: 11.5, padding: '5px 12px', borderRadius: 999, cursor: 'pointer',
+                        border: `1px solid ${cat === c ? 'var(--ember-line)' : 'var(--line-2)'}`,
+                        background: cat === c ? 'var(--ember-dim)' : 'transparent', color: cat === c ? 'var(--ember-text)' : 'var(--text-3)',
+                      }}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+                {queries.length === 0 ? (
+                  <p style={{ color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 13 }}>No starter queries in this category.</p>
+                ) : (
+                  queries.map((q, i) => <QueryCard key={i} query={q} />)
+                )}
+              </div>
+            )}
+
+            {/* RUNBOOKS */}
+            {tab === 'runbooks' && (
+              <div style={{ marginTop: 26 }}>
+                {kit.runbooks.length === 0 ? (
+                  <p style={{ color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 13 }}>No alerts were found to document.</p>
+                ) : (
+                  kit.runbooks.map((r, i) => <RunbookCard key={i} rb={r} />)
+                )}
+              </div>
+            )}
+
+            {/* DASHBOARD */}
+            {tab === 'dashboard' && <DashboardTab panels={kit.dashboard_panels} hasXml={!!kit.dashboard_xml} />}
+
+            <div className="row" style={{ justifyContent: 'space-between', marginTop: 48, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
+              <span className="mono" style={{ fontSize: 12.5, color: 'var(--text-3)' }}>got a question about any of this?</span>
+              <button className="btn" onClick={() => goto('ask')}>
+                <Icons.chat size={15} style={{ color: 'var(--ember)' }} /> Ask cairn
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
-// ── 1. Generated queries ────────────────────────────────────────────────────
-
-function QueriesBlock({ queries }: { queries: GeneratedSPL[] }) {
-  // Group by category, preserving the canonical order then any extras.
-  const byCategory = new Map<string, GeneratedSPL[]>();
-  for (const q of queries) {
-    const list = byCategory.get(q.category) ?? [];
-    list.push(q);
-    byCategory.set(q.category, list);
-  }
-  const cats = [
-    ...CATEGORY_ORDER.filter(c => byCategory.has(c)),
-    ...[...byCategory.keys()].filter(c => !CATEGORY_ORDER.includes(c)),
-  ];
-
+function QueryCard({ query: q }: { query: GeneratedSPL }) {
+  const tone = CAT_TONE[q.category] ?? 'var(--text-3)';
   return (
-    <section id="starter-queries" className="starter-block">
-      <h2 className="starter-section-header">Generated Queries</h2>
-      {queries.length === 0 ? (
-        <p className="starter-empty">No starter queries were generated for this environment.</p>
-      ) : (
-        cats.map(cat => (
-          <div key={cat} className="query-group">
-            <div className="query-group-label">{cat}</div>
-            {byCategory.get(cat)!.map((q, i) => (
-              <QueryCard key={i} query={q} />
-            ))}
-          </div>
-        ))
-      )}
-    </section>
-  );
-}
-
-function QueryCard({ query }: { query: GeneratedSPL }) {
-  return (
-    <div className="query-card">
-      <div className="query-card-toprow">
-        <span className="query-card-title">{query.title}</span>
-        <CategoryChip category={query.category} />
+    <div className="card" style={{ padding: 20, marginBottom: 12 }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div>
+          <h3 style={{ fontSize: 16 }}>{q.title}</h3>
+          {q.description && <p style={{ color: 'var(--text-3)', fontSize: 13, margin: '5px 0 0' }}>{q.description}</p>}
+        </div>
+        <span className="pill" style={{ color: tone, borderColor: `${tone}44` }}>{q.category}</span>
       </div>
-      {query.description && <div className="query-card-desc">{query.description}</div>}
-      <CodeBlock text={query.spl} />
+      <div style={{ marginTop: 14 }}><CodeBlock code={q.spl} /></div>
     </div>
   );
 }
 
-function CategoryChip({ category }: { category: string }) {
-  const c = CATEGORY_COLORS[category] ?? CATEGORY_COLORS.other;
-  return (
-    <span
-      className="query-cat-chip"
-      style={{ background: c.bg, borderColor: c.border, color: c.text }}
-    >
-      {category}
-    </span>
-  );
-}
-
-// ── 2. Alert runbooks ───────────────────────────────────────────────────────
-
-function RunbooksBlock({ runbooks }: { runbooks: Runbook[] }) {
-  return (
-    <section id="starter-runbooks" className="starter-block">
-      <h2 className="starter-section-header">Alert Runbooks</h2>
-      {runbooks.length === 0 ? (
-        <p className="starter-empty">No alerts were found to document.</p>
-      ) : (
-        runbooks.map((rb, i) => <RunbookCard key={i} runbook={rb} />)
-      )}
-    </section>
-  );
-}
-
-function RunbookCard({ runbook: rb }: { runbook: Runbook }) {
+function RunbookCard({ rb }: { rb: Runbook }) {
   const sev = rb.severity === 'critical' ? 'critical' : rb.severity === 'info' ? 'info' : 'warning';
   return (
-    <div className="runbook-card">
-      <div className="runbook-header">
-        <span className={`runbook-severity runbook-severity-${sev}`} />
-        <span className="runbook-title">{rb.alert_name}</span>
-        <span className={`runbook-sev-label sev-${sev}`}>{rb.severity}</span>
+    <div className="card" style={{ padding: 24, marginBottom: 16, borderLeft: `2px solid ${sev === 'critical' ? 'var(--sev-high)' : sev === 'info' ? 'var(--sev-low)' : 'var(--sev-med)'}` }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <h3 style={{ fontSize: 18 }}>{rb.alert_name}</h3>
+        <SeverityBadge level={sev} />
       </div>
 
       {rb.what_it_means && (
         <>
-          <div className="runbook-section-label">What it means</div>
-          <p className="runbook-text">{rb.what_it_means}</p>
+          <Eyebrow style={{ margin: '18px 0 8px' }}>what it means</Eyebrow>
+          <p style={{ color: 'var(--text-2)', margin: 0 }}>{rb.what_it_means}</p>
         </>
       )}
 
       {rb.chain_summary && (
         <>
-          <div className="runbook-section-label">Dependency chain</div>
-          <pre className="runbook-chain"><code>{rb.chain_summary}</code></pre>
+          <Eyebrow style={{ margin: '18px 0 10px' }}>dependency trail</Eyebrow>
+          <div className="mono" style={{ fontSize: 12.5, color: 'var(--text-2)', background: 'var(--ink-0)', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', padding: '10px 14px' }}>
+            {rb.chain_summary}
+          </div>
         </>
       )}
 
       {rb.first_checks?.length > 0 && (
         <>
-          <div className="runbook-section-label">First checks</div>
-          <ol className="runbook-checks">
-            {rb.first_checks.map((check, i) => (
-              <li key={i}>{check}</li>
+          <Eyebrow style={{ margin: '18px 0 10px' }}>first checks</Eyebrow>
+          <div className="col" style={{ gap: 8 }}>
+            {rb.first_checks.map((c, i) => (
+              <div key={i} className="row gap-3" style={{ alignItems: 'flex-start' }}>
+                <span style={{ width: 19, height: 19, flexShrink: 0, borderRadius: 5, border: '1px solid var(--line-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--text-3)' }}>
+                  {i + 1}
+                </span>
+                <span style={{ fontSize: 14, color: 'var(--text-2)' }}>{c}</span>
+              </div>
             ))}
-          </ol>
+          </div>
         </>
       )}
 
       {rb.spl_to_run && (
         <>
-          <div className="runbook-section-label">Investigative SPL</div>
-          <CodeBlock text={rb.spl_to_run} />
+          <Eyebrow style={{ margin: '18px 0 8px' }}>spl to run</Eyebrow>
+          <CodeBlock code={rb.spl_to_run} />
         </>
       )}
 
       {rb.who_to_contact && (
-        <div className="runbook-contact">
-          <span className="runbook-contact-label">Who to contact:</span> {rb.who_to_contact}
+        <div className="row gap-2" style={{ marginTop: 16, fontSize: 13 }}>
+          <Icons.chat size={14} style={{ color: 'var(--ember)' }} />
+          <span style={{ color: 'var(--text-3)' }}>who to contact:</span>
+          <span style={{ color: 'var(--text)' }}>{rb.who_to_contact}</span>
         </div>
       )}
     </div>
   );
 }
 
-// ── 3. Dashboard skeleton ───────────────────────────────────────────────────
-
-function DashboardBlock({ panels, hasXml }: { panels: DashboardPanel[]; hasXml: boolean }) {
+function DashboardTab({ panels, hasXml }: { panels: DashboardPanel[]; hasXml: boolean }) {
   const [downloadError, setDownloadError] = useState('');
-
   async function handleDownload() {
     setDownloadError('');
     try {
@@ -205,68 +220,35 @@ function DashboardBlock({ panels, hasXml }: { panels: DashboardPanel[]; hasXml: 
       setDownloadError(err instanceof Error ? err.message : String(err));
     }
   }
-
   return (
-    <section id="starter-dashboard" className="starter-block">
-      <h2 className="starter-section-header">Dashboard Skeleton</h2>
+    <div style={{ marginTop: 26 }}>
+      <div className="card" style={{ padding: 20, marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+        <div>
+          <h3 style={{ fontSize: 16 }}>cairn-starter-dashboard.xml</h3>
+          <p style={{ color: 'var(--text-3)', fontSize: 13, margin: '5px 0 0' }}>
+            {panels.length} panel{panels.length !== 1 ? 's' : ''} · Simple XML · import via Settings → Dashboards
+          </p>
+        </div>
+        <button className="btn btn-primary" onClick={handleDownload} disabled={!hasXml}>
+          <Icons.download size={15} /> Download XML
+        </button>
+      </div>
+      {downloadError && <div style={{ color: 'var(--sev-high)', fontFamily: 'var(--mono)', fontSize: 12.5, marginBottom: 12 }}>{downloadError}</div>}
       {panels.length === 0 ? (
-        <p className="starter-empty">No panels were generated.</p>
+        <p style={{ color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 13 }}>No panels were generated.</p>
       ) : (
         panels.map((p, i) => (
-          <div key={i} className="panel-preview">
-            <div className="panel-preview-head">
-              <span className="panel-preview-title">{p.title}</span>
-              <span className="panel-viz">{p.viz_type}</span>
+          <div key={i} className="card" style={{ padding: 18, marginBottom: 10 }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <h4 style={{ fontSize: 14.5 }}>{p.title}</h4>
+              <span className="pill" style={{ color: 'var(--text-3)' }}>
+                <Icons.dot size={8} /> {VIZ_LABEL[p.viz_type] ?? p.viz_type}
+              </span>
             </div>
-            <CodeBlock text={p.spl} />
+            <div style={{ marginTop: 12 }}><CodeBlock code={p.spl} pad="10px 14px" /></div>
           </div>
         ))
       )}
-
-      <button
-        className="dashboard-download-btn"
-        onClick={handleDownload}
-        disabled={!hasXml}
-      >
-        ↓ Download Dashboard XML
-      </button>
-      {downloadError && <div className="starter-empty" style={{ color: 'var(--accent-red)' }}>{downloadError}</div>}
-
-      <p className="dashboard-note">
-        Import this XML into Splunk: Settings → User Interface → Views → New Dashboard
-        → Source → paste the XML
-      </p>
-    </section>
-  );
-}
-
-// ── Shared: SPL code block with a copy button ───────────────────────────────
-
-function CodeBlock({ text }: { text: string }) {
-  return (
-    <div className="query-card-spl">
-      <pre><code>{text}</code></pre>
-      <CopyButton text={text} />
     </div>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard can be blocked (insecure context / permissions); fail quietly.
-    }
-  }
-
-  return (
-    <button className={`copy-btn ${copied ? 'copied' : ''}`} onClick={copy}>
-      {copied ? 'Copied' : 'Copy'}
-    </button>
   );
 }

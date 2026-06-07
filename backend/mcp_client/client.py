@@ -91,6 +91,41 @@ def _insecure_transport_kwargs(transport_fn: Any) -> dict[str, Any]:
 logger = logging.getLogger(__name__)
 
 
+# ---- Token sanitisation ------------------------------------------------------
+
+# Smart punctuation that copy-paste (word processors, PDFs, chat clients) can
+# silently inject into an otherwise-ASCII auth token. HTTP header values are
+# ASCII/latin-1 only, so a stray em dash makes httpx raise a cryptic
+# "'ascii' codec can't encode character" error before the request even leaves.
+# Base64url tokens legitimately contain '-', which is exactly what gets mangled
+# into an en/em dash — so repairing these usually makes a corrupted token work.
+_DASH_CHARS = "‐‑‒–—―−"  # ‐ ‑ ‒ – — ― −
+_SQUOTE_CHARS = "‘’‚‛"
+_DQUOTE_CHARS = "“”„‟"
+
+
+def _normalize_token(raw: str) -> str:
+    """Strip whitespace and fold common smart punctuation back to ASCII.
+
+    A no-op for a clean token. Repairs the frequent copy-paste corruption where
+    a hyphen in a base64url token becomes an en/em dash (and trims the trailing
+    newline that creeps in when a token is pasted from a terminal).
+    """
+    cleaned: list[str] = []
+    for ch in (raw or "").strip():
+        if ch in _DASH_CHARS:
+            cleaned.append("-")
+        elif ch in _SQUOTE_CHARS:
+            cleaned.append("'")
+        elif ch in _DQUOTE_CHARS:
+            cleaned.append('"')
+        elif ch == " ":  # non-breaking space
+            continue
+        else:
+            cleaned.append(ch)
+    return "".join(cleaned)
+
+
 # ---- Tool names --------------------------------------------------------------
 
 # Core splunk_* tools — assumed to be available on every Splunk MCP deployment.
@@ -233,8 +268,13 @@ class SplunkMCPClient:
         default_result_cap: int = 1000,
         transport: str = TRANSPORT_STREAMABLE_HTTP,
     ) -> None:
-        self._url = url
-        self._token = token
+        self._url = (url or "").strip()
+        self._token = _normalize_token(token)
+        if token and self._token != token.strip():
+            logger.warning(
+                "auth token contained smart punctuation / stray whitespace; "
+                "normalized to ASCII before use"
+            )
         self._default_earliest = default_earliest
         self._default_latest = default_latest
         self._default_result_cap = default_result_cap
@@ -265,6 +305,22 @@ class SplunkMCPClient:
             return self._availability
 
         logger.info("connecting to Splunk MCP at %s", self._url)
+
+        # HTTP header values must be ASCII. If a non-ASCII character survived
+        # normalization, fail with a precise, actionable message instead of the
+        # cryptic "'ascii' codec can't encode character" deep inside httpx.
+        if self._token:
+            try:
+                self._token.encode("ascii")
+            except UnicodeEncodeError as exc:
+                bad = self._token[exc.start]
+                raise SplunkMCPError(
+                    f"auth token contains a non-ASCII character {bad!r} "
+                    f"(U+{ord(bad):04X}) at position {exc.start} — this is almost "
+                    "always a copy-paste artifact (a smart quote or dash). "
+                    "Re-copy the raw token from Splunk and paste it again."
+                ) from exc
+
         headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
 
         self._exit_stack = AsyncExitStack()
