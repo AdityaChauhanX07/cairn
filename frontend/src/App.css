@@ -380,15 +380,25 @@ h1,h2,h3,h4 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
    landing page — scrolling pitch: hero (3D) → problem/modes → loop → cta
    ============================================================ */
 
-/* The landing is its own scroll container (the app body is overflow:hidden).
-   It scopes the standalone landing palette (brighter, more golden ember and
-   cooler near-black) so it matches index.html rather than the warm app shell. */
-.landing {
+/* ============================================================
+   LANDING PAGE
+   A full-page scroll experience: the constellation + overlays are
+   position:fixed (z:0/1) and the content scrolls naturally over them
+   (z:2). Below-fold sections wrap in .landing-solid for a gradient
+   backdrop so text reads over the canvas. The palette is scoped here
+   (brighter, golden ember; cooler near-black) to match index.html
+   rather than the warm app shell.
+   ============================================================ */
+
+/* While the landing is mounted, relax the app's body overflow lock so the
+   page scrolls naturally and the fixed background can parallax. */
+html.landing-scroll, html.landing-scroll body { overflow-x: hidden; }
+html.landing-scroll body { overflow-y: auto; }
+html.landing-scroll #root { height: auto; min-height: 100vh; width: 100%; }
+
+.landing-wrap {
   position: relative;
-  height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
-  background: #0a0911;
+  min-height: 100vh;
   --ember: #df8a55;
   --ember-bright: #f0a06b;
   --ember-dim: rgba(223, 138, 85, 0.16);
@@ -401,6 +411,39 @@ h1,h2,h3,h4 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
   --line-2: rgba(244, 237, 225, 0.18);
   --line-3: rgba(244, 237, 225, 0.26);
 }
+
+/* ── fixed background layers ── */
+.landing-bg-fixed {
+  position: fixed; inset: 0; z-index: 0;
+  background: radial-gradient(130% 90% at 50% 108%, #6e3b1c 0%, #3a2320 26%, #1a1320 52%, #0d0b14 78%, #08070e 100%);
+}
+.landing-canvas { position: absolute; inset: 0; }
+.landing-canvas canvas { display: block; }
+.landing-vignette {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none;
+  background: radial-gradient(120% 120% at 50% 40%, transparent 55%, rgba(8,7,14,0.55) 100%);
+}
+.landing-grain {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: 0.05; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ── content scrolls over the fixed bg ── */
+.landing-content { position: relative; z-index: 2; }
+
+/* ── fixed nav ── */
+.landing-nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+  display: flex; align-items: center; gap: 24px;
+  padding: 22px 40px;
+  border-bottom: 1px solid transparent;
+  transition: background .3s, backdrop-filter .3s, border-color .3s;
+}
+.landing-nav.scrolled {
+  background: rgba(10, 9, 17, 0.7);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
 .landing-nav-links { margin-left: auto; display: flex; align-items: center; gap: 30px; }
 .landing-nav-link {
   background: transparent; border: none; cursor: pointer; padding: 0;
@@ -408,7 +451,7 @@ h1,h2,h3,h4 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
 }
 .landing-nav-link:hover { color: var(--text); }
 
-/* ── hero (constellation scoped here) ── */
+/* ── hero ── */
 .landing-hero {
   position: relative;
   min-height: 100vh;
@@ -417,31 +460,8 @@ h1,h2,h3,h4 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
   align-items: center;
   justify-content: center;
   text-align: center;
-  padding: 24px;
-  overflow: hidden; /* clip the canvas / grain to the hero */
+  padding: 120px 24px 80px;
 }
-/* deep warm gradient behind the canvas so it reads even before WebGL paints */
-.landing-bg {
-  position: absolute; inset: 0; z-index: 0;
-  background: radial-gradient(130% 90% at 50% 108%, #6e3b1c 0%, #3a2320 26%, #1a1320 52%, #0d0b14 78%, #08070e 100%);
-}
-.landing-canvas { position: absolute; inset: 0; z-index: 0; }
-.landing-canvas canvas { display: block; }
-.landing-vignette {
-  position: absolute; inset: 0; z-index: 1; pointer-events: none;
-  background: radial-gradient(120% 120% at 50% 40%, transparent 55%, rgba(8,7,14,0.55) 100%);
-}
-.landing-grain {
-  position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: 0.05; mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-.landing-top {
-  position: absolute; top: 0; left: 0; right: 0; z-index: 3;
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 22px 40px;
-}
-
 .landing-hero-content {
   position: relative; z-index: 2;
   display: flex; flex-direction: column; align-items: center;
@@ -490,9 +510,12 @@ h1,h2,h3,h4 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
   100% { opacity: 0; transform: translate(-50%, 9px); }
 }
 
-/* ── below the fold (clean dark surfaces) ── */
-.landing-below { position: relative; z-index: 2; background: #0b0a12; }
-.landing-band { max-width: 1180px; margin: 0 auto; padding: 110px 40px; }
+/* ── below the fold ── */
+/* solid gradient backdrop so text reads cleanly over the constellation */
+.landing-solid {
+  background: linear-gradient(180deg, rgba(10,9,17,0) 0%, #0b0a12 12%, #0b0a12 88%, rgba(10,9,17,0) 100%);
+}
+.landing-band { position: relative; z-index: 2; max-width: 1180px; margin: 0 auto; padding: 110px 40px; }
 .landing-sec-head { max-width: 680px; margin-bottom: 54px; }
 .landing-sec-head .eyebrow { margin-bottom: 16px; }
 .landing-h2 { font-size: clamp(30px, 4.4vw, 48px); font-weight: 700; letter-spacing: -0.025em; line-height: 1.05; color: var(--text); }
@@ -575,7 +598,7 @@ h1,h2,h3,h4 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
   .landing-loop-step { flex-direction: column; }
 }
 @media (max-width: 760px) {
-  .landing-top { padding: 18px 22px; }
+  .landing-nav { padding: 18px 22px; }
   .landing-nav-link { display: none; }
   .landing-band { padding: 80px 24px; }
   .landing-stats { grid-template-columns: repeat(2, 1fr); gap: 34px; }

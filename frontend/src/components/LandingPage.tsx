@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useRef, type ReactNode } from 'react';
+import { Suspense, lazy, useEffect, useState, type ReactNode } from 'react';
 import CairnMark from './CairnMark';
 import { Icons } from './Primitives';
 
@@ -71,17 +71,35 @@ const STATS: { n: ReactNode; l: string }[] = [
   { n: '0', l: 'writes to splunk' },
 ];
 
-// Full landing experience — a dramatic hero over the constellation, then the
-// pitch sections scrolling beneath it.
+// Full landing experience — a dramatic hero over a fixed-position constellation,
+// with the pitch sections scrolling naturally over it. The background layers
+// (constellation, vignette, grain) are position:fixed and sit behind .landing-
+// content (z-index:2); below-fold sections wrap in .landing-solid so the text
+// reads cleanly over the canvas.
 export default function LandingPage({ onEnter }: Props) {
-  const scrollerRef = useRef<HTMLDivElement>(null);
-  const belowRef = useRef<HTMLDivElement>(null);
+  const [scrolled, setScrolled] = useState(false);
 
-  // Reveal-on-scroll for the below-fold sections (root = the scroll container).
+  // The app body is normally overflow:hidden (each screen manages its own scroll
+  // region). The landing is the exception — it scrolls the page naturally so the
+  // fixed background can parallax. Relax the lock while it's mounted, restore on
+  // unmount.
   useEffect(() => {
-    const root = scrollerRef.current;
-    if (!root) return;
-    const els = Array.from(root.querySelectorAll('.reveal')) as HTMLElement[];
+    document.documentElement.classList.add('landing-scroll');
+    window.scrollTo(0, 0);
+    return () => document.documentElement.classList.remove('landing-scroll');
+  }, []);
+
+  // Nav gains a frosted background once the hero starts scrolling away.
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 40);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Reveal-on-scroll for the below-fold sections (default viewport root).
+  useEffect(() => {
+    const els = Array.from(document.querySelectorAll('.reveal:not(.in)')) as HTMLElement[];
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       els.forEach((el) => el.classList.add('in'));
       return;
@@ -95,28 +113,30 @@ export default function LandingPage({ onEnter }: Props) {
           }
         });
       },
-      { root, threshold: 0.15 },
+      { threshold: 0.15 },
     );
     els.forEach((el) => io.observe(el));
     return () => io.disconnect();
   }, []);
 
-  const scrollToBelow = () => belowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   const scrollToId = (id: string) =>
-    scrollerRef.current?.querySelector(`#${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   return (
-    <div className="landing" ref={scrollerRef}>
-      {/* ── HERO (constellation scoped here) ── */}
-      <section className="landing-hero">
-        <div className="landing-bg" />
+    <div className="landing-wrap">
+      {/* ── FIXED BACKGROUND LAYERS (z:0 / z:1) ── */}
+      <div className="landing-bg-fixed">
         <Suspense fallback={null}>
           <Constellation />
         </Suspense>
-        <div className="landing-vignette" />
-        <div className="landing-grain" />
+      </div>
+      <div className="landing-vignette" />
+      <div className="landing-grain" />
 
-        <div className="landing-top">
+      {/* ── SCROLLING CONTENT OVER THE FIXED BG (z:2) ── */}
+      <div className="landing-content">
+        {/* FIXED NAV */}
+        <nav className={`landing-nav${scrolled ? ' scrolled' : ''}`}>
           <div className="row gap-2" style={{ alignItems: 'center' }}>
             <CairnMark size={26} tone="var(--ember)" />
             <span style={{ fontFamily: 'var(--mono)', fontWeight: 600, fontSize: 19, letterSpacing: '-0.02em', color: 'var(--text)' }}>
@@ -131,47 +151,50 @@ export default function LandingPage({ onEnter }: Props) {
               Launch app
             </button>
           </div>
-        </div>
+        </nav>
 
-        <div className="landing-hero-content">
-          <div className="eyebrow" style={{ marginBottom: 26, letterSpacing: '0.22em' }}>
-            Splunk Agentic Ops Hackathon · Platform &amp; Developer Experience
+        {/* HERO */}
+        <header className="landing-hero">
+          <div className="landing-hero-content">
+            <div className="eyebrow" style={{ marginBottom: 26, letterSpacing: '0.22em' }}>
+              Splunk Agentic Ops Hackathon · Platform &amp; Developer Experience
+            </div>
+            <h1 className="landing-h1">
+              You inherited
+              <br />
+              the environment.
+              <br />
+              <span style={{ color: 'var(--ember)' }}>Now understand it.</span>
+            </h1>
+            <p className="landing-lead">
+              cairn is an AI agent that walks into any Splunk deployment, traces every dependency, documents what
+              everything does, flags what's broken, and hands you a starter kit. A week of tribal knowledge transfer in
+              ten minutes.
+            </p>
+            <div className="landing-cta">
+              <button className="btn btn-primary btn-lg" onClick={onEnter}>
+                Connect &amp; explore <Icons.arrowR size={17} />
+              </button>
+              <button className="btn btn-lg" onClick={() => scrollToId('landing-how')}>
+                See how it works
+              </button>
+            </div>
+            <div className="landing-trust">
+              <span className="landing-trust-dot" /> read-only · it advises, you apply · nothing is ever mutated
+            </div>
           </div>
-          <h1 className="landing-h1">
-            You inherited
-            <br />
-            the environment.
-            <br />
-            <span style={{ color: 'var(--ember)' }}>Now understand it.</span>
-          </h1>
-          <p className="landing-lead">
-            cairn is an AI agent that walks into any Splunk deployment, traces every dependency, documents what
-            everything does, flags what's broken, and hands you a starter kit. A week of tribal knowledge transfer in
-            ten minutes.
-          </p>
-          <div className="landing-cta">
-            <button className="btn btn-primary btn-lg" onClick={onEnter}>
-              Connect &amp; explore <Icons.arrowR size={17} />
-            </button>
-            <button className="btn btn-lg" onClick={scrollToBelow}>
-              See how it works
-            </button>
-          </div>
-          <div className="landing-trust">
-            <span className="landing-trust-dot" /> read-only · it advises, you apply · nothing is ever mutated
-          </div>
-        </div>
 
-        <button className="landing-scrollcue" onClick={scrollToBelow} aria-label="Scroll down">
-          <span className="landing-mouse" />
-          scroll
-        </button>
-      </section>
+          <button className="landing-scrollcue" onClick={() => scrollToId('landing-how')} aria-label="Scroll down">
+            <span className="landing-mouse" />
+            scroll
+          </button>
+        </header>
 
-      {/* ── BELOW THE FOLD (clean dark, design-system surfaces) ── */}
-      <div className="landing-below" ref={belowRef}>
-        {/* THE PROBLEM + THE THREE MODES */}
-        <section className="landing-band" id="landing-how">
+        {/* ── BELOW THE FOLD — .landing-solid gives a gradient backdrop so text
+            reads over the constellation ── */}
+        <div className="landing-solid">
+          {/* THE PROBLEM + THE THREE MODES */}
+          <section className="landing-band" id="landing-how">
           <div className="landing-sec-head">
             <div className="eyebrow reveal">The problem</div>
             <h2 className="landing-h2 reveal d1">
@@ -222,17 +245,19 @@ export default function LandingPage({ onEnter }: Props) {
           </div>
         </section>
 
-        {/* STATS */}
-        <div className="landing-stats">
-          {STATS.map((s, i) => (
-            <div key={s.l} className={`landing-stat reveal d${i}`}>
-              <div className="landing-stat-n">{s.n}</div>
-              <div className="landing-stat-l">{s.l}</div>
-            </div>
-          ))}
+          {/* STATS */}
+          <div className="landing-stats">
+            {STATS.map((s, i) => (
+              <div key={s.l} className={`landing-stat reveal d${i}`}>
+                <div className="landing-stat-n">{s.n}</div>
+                <div className="landing-stat-l">{s.l}</div>
+              </div>
+            ))}
+          </div>
         </div>
+        {/* /.landing-solid */}
 
-        {/* FINAL CTA */}
+        {/* FINAL CTA — no solid backdrop, the constellation shows through */}
         <section className="landing-final">
           <div className="landing-final-glow" />
           <div className="eyebrow reveal" style={{ marginBottom: 24 }}>Built for the trail ahead</div>

@@ -147,8 +147,15 @@ export default function Constellation() {
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     };
+    // Scroll drifts the camera deeper into the cloud, so the constellation reads
+    // as parallax behind the content scrolling over it.
+    let scrollT = 0;
+    const onScroll = () => {
+      scrollT = Math.min(window.scrollY / window.innerHeight, 1);
+    };
     window.addEventListener('mousemove', onMouse, { passive: true });
     window.addEventListener('resize', onResize);
+    window.addEventListener('scroll', onScroll, { passive: true });
 
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const clock = new THREE.Clock();
@@ -163,7 +170,7 @@ export default function Constellation() {
       }
       camera.position.x = mx * 8;
       camera.position.y = -my * 6;
-      camera.position.z = 42;
+      camera.position.z = 42 + scrollT * 16;
       camera.lookAt(0, 0, 0);
       renderer.render(scene, camera);
       raf = requestAnimationFrame(tick);
@@ -174,6 +181,7 @@ export default function Constellation() {
       cancelAnimationFrame(raf);
       window.removeEventListener('mousemove', onMouse);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', onScroll);
       pg.dispose();
       pmat.dispose();
       lg.dispose();
