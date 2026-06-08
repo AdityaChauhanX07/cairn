@@ -101,6 +101,34 @@ Full architecture diagram: [`docs/architecture.png`](docs/architecture.png)
 
 ---
 
+## How it fits together (read this first)
+
+Cairn is **three separate pieces**. Knowing who talks to whom saves a lot of confusion:
+
+```
+  Browser  ──────►  Frontend (React/Vite)  ──────►  Backend (FastAPI)  ──────►  Splunk MCP Server
+   :5173            static UI, no secrets           does the real work          :8089 (your data)
+                                                    holds the LLM key
+```
+
+1. **Frontend** is just the UI. It holds no secrets and never talks to Splunk directly. It calls the backend at the address in `VITE_API_URL`.
+2. **Backend** is the brain. It connects to Splunk over MCP, runs the LLM, and streams reasoning back. The Splunk URL + token you type into the connect form are sent here, and **the backend** opens the connection.
+3. **Splunk** runs the MCP Server app and exposes it on the management port (`:8089`).
+
+> **The #1 gotcha: `localhost` is relative to the backend, not your browser.**
+> When you type `https://localhost:8089/...` into the connect form, *the backend* resolves it. If the backend runs on your laptop next to Splunk, that's correct. If the backend is hosted in the cloud (e.g. Render/Vercel), `localhost` means *that cloud server* — it can never reach the Splunk on your machine. **To demo against a local Splunk, run the backend locally too** (or expose Splunk with a tunnel like `cloudflared`/`ngrok` and paste the public URL into the form).
+
+### Ports at a glance
+
+| Service          | Port   | Notes                                              |
+|------------------|--------|----------------------------------------------------|
+| Splunk Web       | `8000` | Taken by Splunk — **don't** run the backend here   |
+| Splunk mgmt/MCP  | `8089` | What the connect form points at                    |
+| Backend          | `8001` | Dev frontend expects it here (`.env.development`)   |
+| Frontend (Vite)  | `5173` | Open this in the browser                            |
+
+---
+
 ## Setup
 
 ### Prerequisites
@@ -133,7 +161,11 @@ GROQ_API_KEY=your-groq-api-key
 GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
-### 3. Backend
+> The MCP Server app rejects tokens whose JWT `audience` claim isn't `mcp`.
+> Create one with: `Settings > Tokens > New Token` and set **Audience** to `mcp`
+> (or via REST: `... /services/authorization/tokens -d name=admin -d audience=mcp`).
+
+### 3. Backend (run on port 8001)
 
 ```bash
 cd backend
@@ -145,12 +177,17 @@ venv\Scripts\activate
 source venv/bin/activate
 
 pip install -r requirements.txt
-python main.py
+
+# Run on 8001 — 8000 is taken by Splunk Web, and the dev frontend expects 8001.
+uvicorn main:app --port 8001
 ```
 
-Backend runs at `http://localhost:8000`.
+Backend is now at `http://localhost:8001`. Sanity check: `curl http://localhost:8001/api/health` returns `200`.
 
-### 4. Frontend
+> `python main.py` would bind `8000` (the default), which collides with Splunk Web.
+> Either run `uvicorn main:app --port 8001` as above, or add `PORT=8001` to your `.env`.
+
+### 4. Frontend (port 5173)
 
 ```bash
 cd frontend
@@ -158,7 +195,11 @@ npm install
 npm run dev
 ```
 
-Frontend runs at `http://localhost:5173`.
+Open **http://localhost:5173**. In dev it reads `frontend/.env.development` and talks to the backend on `:8001` automatically.
+
+> After pulling new changes, **always re-run `npm install`** — new dependencies
+> (e.g. `three` for the landing animation) won't be in your `node_modules`
+> otherwise, and Vite will throw `Failed to resolve import "three"`.
 
 ### 5. Load demo data (optional)
 
@@ -173,10 +214,27 @@ Then manually upload two lookup CSVs from `demo-data/` via Settings > Lookups > 
 ### 6. Splunk configuration
 
 1. Install the MCP Server app from Splunkbase
-2. Create an auth token: Settings > Tokens > New Token
+2. Create an auth token: Settings > Tokens > New Token (set **Audience** to `mcp`)
 3. Add `mcp_tool_execute` capability to your role
 4. (Optional) Install AI Assistant for SPL to enable `saia_` tools
 5. (Optional) Install Splunk AI Toolkit for MLTK surfacing
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| **"Load failed"** on the connect screen | Frontend can't reach the backend, or the backend can't reach Splunk | Confirm the backend is up (`curl localhost:8001/api/health` → `200`) and that you opened `localhost:5173`, not a cloud-hosted frontend |
+| Connect works for someone else but **not with your Splunk** on a hosted site | The hosted backend resolves `localhost` as *itself*, not your machine | Run the backend locally, or tunnel your Splunk and paste the public URL into the form (see "How it fits together") |
+| `Failed to resolve import "three"` | Dependencies out of date after a `git pull` | `cd frontend && npm install`, then restart `npm run dev` |
+| Backend won't start / port in use | `8000`/`8001` already bound (often Splunk Web on 8000) | Run the backend on `8001`; free a stuck port with `lsof -ti:8001 \| xargs kill -9` |
+| `Invalid token audience` (HTTP 403) | Token's JWT `audience` isn't `mcp` | Recreate the token with **Audience = `mcp`** |
+| `connected: false` / TLS errors | Wrong MCP URL or unreachable Splunk | Verify `https://<host>:8089/services/mcp` returns `405` on a `GET` (405 = alive) |
+
+> **macOS + local Docker Splunk shortcut:** there's a personal `./run.sh` helper that
+> brings up the Splunk container, backend, and frontend together. It's gitignored —
+> copy it as a starting point if you run Splunk in Docker locally.
 
 ---
 
@@ -223,8 +281,12 @@ cairn/
     api/
       routes.py              REST + SSE endpoints
   frontend/
+    .env.development         Dev backend origin (VITE_API_URL=:8001)
+    .env.production          Prod backend origin (set in Vercel project settings)
     src/
       components/
+        LandingPage.tsx      Animated intro / hero screen
+        Constellation.tsx    three.js background animation
         ConnectForm.tsx      Connection screen
         ExploreView.tsx      Live reasoning feed + discovery dashboard
         GuideView.tsx        Three-pane guide + findings + starter kit
@@ -234,9 +296,14 @@ cairn/
         StarterKitView.tsx   Mode C starter kit view
         IndexTiles.tsx       Data landscape visualization
         CairnMark.tsx        Stacking stone progress indicator
+        Primitives.tsx       Shared UI primitives
         Skeleton.tsx         Loading placeholders
+      context/
+        CairnContext.tsx     Shared app state (connection, env, results)
       utils/
-        api.ts               API client
+        api.ts               API client (connect, SSE streams, exports)
+        env.ts               Splunk deployment identity helpers
+        guide.ts             Guide data helpers
         markdown.ts          Markdown renderer
   demo-data/
     setup_splunk.py          Automated Splunk object creation
