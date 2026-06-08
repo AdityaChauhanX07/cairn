@@ -1,7 +1,10 @@
 import type { AgentEvent, Guide, GraphData, AskResponse, StarterKit, FindingsReport } from '../types';
 import { parseDeploymentInfo } from './env';
 
-const BASE = (import.meta.env.VITE_API_BASE as string) || 'http://localhost:8000/api';
+// Backend origin comes from VITE_API_URL (set per-environment via .env files /
+// Vercel). The REST + SSE routes all live under `/api`, so append it here once.
+const API_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8000';
+const BASE = `${API_URL}/api`;
 
 // Resolves with the detected Splunk version (when the deployment reports one)
 // so the connect form can confirm exactly what it validated against.

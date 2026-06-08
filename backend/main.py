@@ -44,12 +44,16 @@ def create_app() -> FastAPI:
     )
 
     # CORS first, so the preflight is answered here and never falls through to
-    # routing. Open for local development (the agent is a single-tenant dev tool
-    # reached over localhost); tighten allow_origins for any shared deployment.
+    # routing. allow_origins=["*"] accepts any origin — the deployed frontend's
+    # domain (e.g. the Vercel URL) isn't known at build time. Credentials are
+    # disabled on purpose: the browser forbids "*" together with
+    # Access-Control-Allow-Credentials, and the frontend authenticates with a
+    # token in the request body rather than cookies, so credentialed CORS isn't
+    # needed. Restrict allow_origins to specific domains if that ever changes.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -72,7 +76,13 @@ app = create_app()
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
 
+    # Bind 0.0.0.0 and honor $PORT so `python main.py` works on hosts like Render
+    # (which injects PORT). Locally, PORT is usually unset and we fall back to the
+    # configured settings port (default 8000).
     s = get_settings()
-    uvicorn.run("main:app", host=s.host, port=s.port, reload=True)
+    port = int(os.environ.get("PORT", s.port))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
