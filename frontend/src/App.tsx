@@ -42,6 +42,8 @@ function Shell() {
   const cairn = useCairn();
   const [screen, setScreen] = useState<Screen>('landing');
   const [explored, setExplored] = useState(false);
+  // Screens the user has navigated past — rendered "done" (green ✓) in the trail.
+  const [visited, setVisited] = useState<Set<Screen>>(new Set());
   const [exporting, setExporting] = useState(false);
   const [theme, setTheme] = useState<string>(() => {
     try {
@@ -65,23 +67,28 @@ function Shell() {
   function go(k: Screen) {
     if (k === 'connect') return;
     if (!explored && k !== 'explore') return;
+    // Mark the screen we're leaving as visited before moving on.
+    setVisited((prev) => new Set([...prev, screen]));
     setScreen(k);
   }
 
-  const onConnect = () => setScreen('explore');
+  const onConnect = () => {
+    setVisited((prev) => new Set([...prev, 'connect']));
+    setScreen('explore');
+  };
   const onExploreComplete = () => {
     setExplored(true);
+    setVisited((prev) => new Set([...prev, 'explore']));
     setScreen('guide');
   };
 
   function status(k: Screen): StopStatus {
-    if (k === 'connect') return screen === 'connect' ? 'active' : 'done';
-    if (k === 'explore') {
-      if (screen === 'explore') return 'active';
-      return explored ? 'done' : screen === 'connect' ? 'locked' : 'active';
-    }
+    if (k === screen) return 'active';
+    if (k === 'connect') return 'done'; // always past it once the shell shows
+    if (k === 'explore') return explored ? 'done' : 'locked';
     if (!explored) return 'locked';
-    return screen === k ? 'active' : 'ready';
+    if (visited.has(k)) return 'done';
+    return 'ready';
   }
 
   async function handleExport() {
