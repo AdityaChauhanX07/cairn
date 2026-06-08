@@ -73,6 +73,9 @@ function Shell() {
   // the backend session is still alive — show a brief splash instead of mounting
   // a view that would fire (and fail) data fetches against a dead session.
   const [booting, setBooting] = useState<boolean>(() => screen !== 'landing' && screen !== 'connect');
+  // The screen we left to open Connect — lets an already-explored user return
+  // without reconnecting.
+  const [prevScreen, setPrevScreen] = useState<Screen | null>(null);
   const [exporting, setExporting] = useState(false);
   const [theme, setTheme] = useState<string>(() => {
     try {
@@ -205,6 +208,18 @@ function Shell() {
   if (screen === 'connect') {
     return (
       <>
+        {explored && prevScreen && (
+          <button
+            onClick={() => setScreen(prevScreen)}
+            style={{
+              position: 'fixed', top: 20, left: 20, zIndex: 10,
+              background: 'none', border: 'none', color: 'var(--text-2)', cursor: 'pointer',
+              fontFamily: 'var(--sans)', fontSize: 14,
+            }}
+          >
+            ← Back
+          </button>
+        )}
         <ConnectForm onConnected={onConnect} />
         <ThemeToggle theme={theme} onToggle={toggleTheme} floating />
       </>
@@ -232,7 +247,13 @@ function Shell() {
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--ink-0)' }}>
       {/* TOP BAR */}
       <header className="row" style={{ height: 60, padding: '0 22px', borderBottom: '1px solid var(--line)', background: 'var(--ink)', flexShrink: 0, gap: 20 }}>
-        <Wordmark size={18} />
+        <button
+          onClick={() => { setPrevScreen(screen); setScreen('connect'); }}
+          title="Back to Connect"
+          style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+        >
+          <Wordmark size={18} />
+        </button>
         <span className="grow" />
         {topBar && (
           <div className="row gap-3" style={{ color: 'var(--text-2)' }}>
