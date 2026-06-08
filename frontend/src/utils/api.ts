@@ -183,6 +183,22 @@ export async function getGraph(): Promise<GraphData> {
   return res.json() as Promise<GraphData>;
 }
 
+export interface HealthStatus {
+  status: string;
+  connected: boolean;
+  has_explored: boolean;
+  guide_ready: boolean;
+}
+
+// Liveness + session probe. Used on a page refresh to decide whether the
+// restored screen is still backed by a live backend session (the session is
+// process-global, so it survives a browser refresh but not a backend restart).
+export async function getHealth(): Promise<HealthStatus> {
+  const res = await fetch(`${BASE}/health`);
+  if (!res.ok) throw new Error(`Health check failed: ${res.statusText}`);
+  return res.json() as Promise<HealthStatus>;
+}
+
 export async function askQuestion(question: string): Promise<AskResponse> {
   const res = await fetch(`${BASE}/ask`, {
     method: 'POST',

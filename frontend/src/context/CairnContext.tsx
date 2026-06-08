@@ -58,6 +58,10 @@ interface CairnContextValue {
   chatLoading: boolean;
   chatError: string;
   sendChat: (question: string) => void;
+
+  // Wipe all in-memory session data. Called when the backend session is gone
+  // (e.g. it restarted) so a fresh connect doesn't inherit stale guide/findings.
+  resetSession: () => void;
 }
 
 const Ctx = createContext<CairnContextValue | null>(null);
@@ -165,6 +169,29 @@ export function CairnProvider({ children }: { children: ReactNode }) {
       .finally(() => setChatLoading(false));
   }, [chatLoading]);
 
+  // ── Reset everything that's tied to one backend session ──
+  const resetSession = useCallback(() => {
+    findingsCancel.current?.();
+    kitCancel.current?.();
+    setGuide(null);
+    setGuideError('');
+    guideLoadingRef.current = false;
+    setFindings(null);
+    setFindingsGenerating(false);
+    setFindingsProgress([]);
+    setFindingsError('');
+    findingsStarted.current = false;
+    setKit(null);
+    setKitGenerating(false);
+    setKitProgress([]);
+    setKitError('');
+    kitStarted.current = false;
+    setChat([]);
+    setChatLoading(false);
+    setChatError('');
+    setExplorationLog([]);
+  }, []);
+
   const value: CairnContextValue = {
     env, refreshEnv,
     explorationLog, setExplorationLog,
@@ -173,6 +200,7 @@ export function CairnProvider({ children }: { children: ReactNode }) {
     findings, findingsGenerating, findingsProgress, findingsError, ensureFindings,
     kit, kitGenerating, kitProgress, kitError, ensureKit,
     chat, chatLoading, chatError, sendChat,
+    resetSession,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

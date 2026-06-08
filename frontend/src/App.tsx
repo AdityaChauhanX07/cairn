@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { CairnProvider, useCairn } from './context/CairnContext';
-import { exportGuide } from './utils/api';
+import { exportGuide, getHealth } from './utils/api';
 import { envSummaryLine } from './utils/env';
 import LandingPage from './components/LandingPage';
 import ConnectForm from './components/ConnectForm';
@@ -40,10 +40,39 @@ export default function App() {
 
 function Shell() {
   const cairn = useCairn();
-  const [screen, setScreen] = useState<Screen>('landing');
-  const [explored, setExplored] = useState(false);
+  // Restore the trail position from sessionStorage so a refresh resumes where
+  // the user left off (and clears when the tab closes). Landing/connect are not
+  // resumable — those are entry screens, not progress.
+  const [screen, setScreen] = useState<Screen>(() => {
+    try {
+      const saved = sessionStorage.getItem('cairn-screen') as Screen | null;
+      if (saved && saved !== 'landing' && saved !== 'connect') return saved;
+    } catch {
+      /* storage unavailable — fall through */
+    }
+    return 'landing';
+  });
+  const [explored, setExplored] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('cairn-explored') === 'true';
+    } catch {
+      return false;
+    }
+  });
   // Screens the user has navigated past — rendered "done" (green ✓) in the trail.
-  const [visited, setVisited] = useState<Set<Screen>>(new Set());
+  const [visited, setVisited] = useState<Set<Screen>>(() => {
+    try {
+      const saved = sessionStorage.getItem('cairn-visited');
+      if (saved) return new Set(JSON.parse(saved) as Screen[]);
+    } catch {
+      /* storage unavailable / bad JSON — start empty */
+    }
+    return new Set();
+  });
+  // While true, we've restored a post-connect screen but haven't yet confirmed
+  // the backend session is still alive — show a brief splash instead of mounting
+  // a view that would fire (and fail) data fetches against a dead session.
+  const [booting, setBooting] = useState<boolean>(() => screen !== 'landing' && screen !== 'connect');
   const [exporting, setExporting] = useState(false);
   const [theme, setTheme] = useState<string>(() => {
     try {
@@ -64,6 +93,48 @@ function Shell() {
 
   const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
 
+  // Persist trail progress to sessionStorage on every change.
+  useEffect(() => {
+    try { sessionStorage.setItem('cairn-screen', screen); } catch { /* ignore */ }
+  }, [screen]);
+  useEffect(() => {
+    try { sessionStorage.setItem('cairn-explored', explored ? 'true' : 'false'); } catch { /* ignore */ }
+  }, [explored]);
+  useEffect(() => {
+    try { sessionStorage.setItem('cairn-visited', JSON.stringify([...visited])); } catch { /* ignore */ }
+  }, [visited]);
+
+  // Drop the restored session and return to Connect. Used when the backend has
+  // no live session for the restored screen (it restarted, or this is a fresh
+  // server) — the persisted progress is meaningless without it.
+  function resetToConnect() {
+    try { sessionStorage.clear(); } catch { /* ignore */ }
+    cairn.resetSession();
+    setExplored(false);
+    setVisited(new Set());
+    setScreen('connect');
+  }
+
+  // On a refresh that restored a post-connect screen, confirm the backend
+  // session is alive before showing it. If it's gone, fall back to Connect; the
+  // views themselves re-fetch their data (guide/findings/kit) once we proceed.
+  useEffect(() => {
+    if (!booting) return;
+    let cancelled = false;
+    getHealth()
+      .then((h) => {
+        if (cancelled) return;
+        if (!h.connected) { resetToConnect(); return; }
+        // Trust the server's view of whether exploration finished.
+        if (h.has_explored) setExplored(true);
+      })
+      .catch(() => { if (!cancelled) resetToConnect(); })
+      .finally(() => { if (!cancelled) setBooting(false); });
+    return () => { cancelled = true; };
+    // Runs once on mount; resetToConnect/setters are stable enough for this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function go(k: Screen) {
     if (k === 'connect') return;
     if (!explored && k !== 'explore') return;
@@ -73,6 +144,8 @@ function Shell() {
   }
 
   const onConnect = () => {
+    // Fresh session — drop any data left over from a previous connect/refresh.
+    cairn.resetSession();
     setVisited((prev) => new Set([...prev, 'connect']));
     setScreen('explore');
   };
@@ -107,6 +180,20 @@ function Shell() {
     } finally {
       setExporting(false);
     }
+  }
+
+  // Validating a restored session — show a brief splash rather than flashing a
+  // view (and firing failing fetches) before we know the session is alive.
+  if (booting) {
+    return (
+      <div
+        className="center"
+        style={{ height: '100vh', flexDirection: 'column', gap: 14, background: 'var(--ink-0)', color: 'var(--text-3)' }}
+      >
+        <Wordmark size={20} />
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 12.5 }}>restoring your session…</span>
+      </div>
+    );
   }
 
   // Landing: full-screen 3D hero, the first thing users see. No shell.
