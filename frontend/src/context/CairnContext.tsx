@@ -15,13 +15,18 @@ import {
 import { loadEnv, type CairnEnv } from '../utils/env';
 import { deriveCounts, deriveGuideGraph, type Counts } from '../utils/guide';
 import type {
-  Guide, GraphData, FindingsReport, StarterKit, ChatMessage,
+  Guide, GraphData, FindingsReport, StarterKit, ChatMessage, LogEntry,
 } from '../types';
 
 interface CairnContextValue {
   // environment identity (captured during explore, persisted to localStorage)
   env: CairnEnv | null;
   refreshEnv: () => void;
+
+  // exploration agent log — persisted so it survives navigating away from and
+  // back to the Explore screen (otherwise the log is lost when it unmounts).
+  explorationLog: LogEntry[];
+  setExplorationLog: (log: LogEntry[]) => void;
 
   // guide (Mode A)
   guide: Guide | null;
@@ -66,6 +71,9 @@ export function useCairn(): CairnContextValue {
 export function CairnProvider({ children }: { children: ReactNode }) {
   const [env, setEnv] = useState<CairnEnv | null>(() => loadEnv());
   const refreshEnv = useCallback(() => setEnv(loadEnv()), []);
+
+  // ── Exploration log (persisted across navigation) ──
+  const [explorationLog, setExplorationLog] = useState<LogEntry[]>([]);
 
   // ── Guide ──
   const [guide, setGuide] = useState<Guide | null>(null);
@@ -159,6 +167,7 @@ export function CairnProvider({ children }: { children: ReactNode }) {
 
   const value: CairnContextValue = {
     env, refreshEnv,
+    explorationLog, setExplorationLog,
     guide, guideError, counts, graph, loadGuide,
     graphFocus, setGraphFocus,
     findings, findingsGenerating, findingsProgress, findingsError, ensureFindings,

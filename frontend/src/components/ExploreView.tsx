@@ -137,7 +137,14 @@ export default function ExploreView({ replay, onComplete }: Props) {
   const logRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<(() => void) | null>(null);
 
-  const liveEvents = useMemo(() => [...events, ...genEvents].map((f) => f.ev), [events, genEvents]);
+  // On replay, the live local feed is empty (the component re-mounted), so draw
+  // the agent log from the persisted context log instead. Live runs use the
+  // local feed (explore events + guide-generation events).
+  const feed: FeedItem[] = useMemo(
+    () => (replay ? cairn.explorationLog : [...events, ...genEvents]),
+    [replay, cairn.explorationLog, events, genEvents],
+  );
+  const liveEvents = useMemo(() => feed.map((f) => f.ev), [feed]);
   const liveCounts = useMemo(() => deriveCounts(liveEvents), [liveEvents]);
   const liveGraph = useMemo(() => deriveGraph(liveEvents), [liveEvents]);
   const liveEnv = useMemo(() => deriveEnv(liveEvents), [liveEvents]);
@@ -156,6 +163,18 @@ export default function ExploreView({ replay, onComplete }: Props) {
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [events, genEvents]);
+
+  // Persist the agent log to context at completion points so it survives a
+  // navigation back to Explore. Snapshot (not per-event append) keeps it stored
+  // once and avoids StrictMode double-appends. Never write while replaying — we
+  // are reading the stored log in that mode.
+  const { setExplorationLog } = cairn;
+  useEffect(() => {
+    if (replay) return;
+    if (phase === 'explored' || phase === 'done') {
+      setExplorationLog([...events, ...genEvents]);
+    }
+  }, [phase, replay, events, genEvents, setExplorationLog]);
 
   // Auto-start exploration on mount (unless we're replaying a finished run).
   // The cleanup cancels the in-flight stream; under React StrictMode (dev) the
@@ -207,9 +226,13 @@ export default function ExploreView({ replay, onComplete }: Props) {
 
           <div ref={logRef} style={{ flex: 1, overflowY: 'auto', padding: '14px 24px 24px' }}>
             {replay ? (
-              <div style={{ color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 13, paddingTop: 8 }}>
-                exploration already complete this session — the relationship graph is on the right.
-              </div>
+              feed.length > 0 ? (
+                feed.map((f, i) => <LogLine key={i} item={f} />)
+              ) : (
+                <div style={{ color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 13, paddingTop: 8 }}>
+                  exploration already complete this session — the relationship graph is on the right.
+                </div>
+              )
             ) : (
               <>
                 {phase === 'exploring' && events.length === 0 && <SkeletonText lines={5} />}

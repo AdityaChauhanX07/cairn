@@ -5,6 +5,13 @@ export interface AgentEvent {
   data?: Record<string, unknown>;
 }
 
+// A single rendered agent-log line: an event plus the wall-clock timestamp it
+// arrived. Persisted in CairnContext so the Explore log survives navigation.
+export interface LogEntry {
+  ev: AgentEvent;
+  ts: string;
+}
+
 export interface GuideSection {
   title: string;
   content: string;
