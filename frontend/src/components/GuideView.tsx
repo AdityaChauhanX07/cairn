@@ -1,39 +1,25 @@
-import { Fragment, useEffect, useMemo, useRef, useState, forwardRef, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useCairn } from '../context/CairnContext';
 import { markdownToHtml } from '../utils/markdown';
 import { envSummaryLine } from '../utils/env';
 import { navCount, type Counts } from '../utils/guide';
 import { categorize } from './IndexTiles';
 import RelationshipGraph from './RelationshipGraph';
-import { Eyebrow, Icons } from './Primitives';
+import { Chain, CodeBlock, Eyebrow, Icons, NodeChip, SeverityBadge } from './Primitives';
 import { SkeletonText } from './Skeleton';
 import type {
   GuideSection,
-  ObjectRef,
+  StructuredAlert,
+  StructuredDashboard,
   StructuredData,
+  StructuredLookup,
+  StructuredMacro,
 } from '../types';
 import type { Screen } from '../App';
 
 interface Props {
   goto: (screen: Screen) => void;
 }
-
-// Per-section accent + summary, keyed by the backend's section titles.
-const SECTION_META: Record<string, { accent: string; summary: (c: Counts) => string }> = {
-  'Critical Alerts & What They Mean': {
-    accent: 'var(--n-alert)',
-    summary: (c) =>
-      c.alert === 0 ? 'no alerts found' : `${c.alert} alert${c.alert !== 1 ? 's' : ''}${c.critical ? ` · ${c.critical} critical` : ''}`,
-  },
-  'Your Data Landscape': { accent: 'var(--n-index)', summary: (c) => `${c.index} index${c.index !== 1 ? 'es' : ''}` },
-  "Your Team's Dashboards": { accent: 'var(--n-dash)', summary: (c) => `${c.dashboard} dashboard${c.dashboard !== 1 ? 's' : ''}` },
-  'The Shorthand': { accent: 'var(--n-macro)', summary: (c) => `${c.macro} macro${c.macro !== 1 ? 's' : ''} · ${c.lookup} lookup${c.lookup !== 1 ? 's' : ''}` },
-  'Who Knows What': { accent: 'var(--n-search)', summary: (c) => (c.owners ? `${c.owners} owner${c.owners !== 1 ? 's' : ''}` : 'ownership') },
-  'AI & ML Footprint': {
-    accent: 'var(--ember)',
-    summary: (c) => `${c.mltkAlgorithms} algorithm${c.mltkAlgorithms !== 1 ? 's' : ''}${c.mltkModels ? ` · ${c.mltkModels} models` : ' · no trained models'}`,
-  },
-};
 
 const ALERTS_TITLE = 'Critical Alerts & What They Mean';
 const DATA_LANDSCAPE_TITLE = 'Your Data Landscape';
@@ -42,13 +28,48 @@ const SHORTHAND_TITLE = 'The Shorthand';
 const OWNERSHIP_TITLE = 'Who Knows What';
 const ML_TITLE = 'AI & ML Footprint';
 
+// Per-section subtitle (the small eyebrow under the heading), keyed by title.
+const SECTION_SUB: Record<string, (c: Counts) => string> = {
+  [ALERTS_TITLE]: (c) =>
+    c.alert === 0 ? 'no alerts found' : `${c.alert} alert${c.alert !== 1 ? 's' : ''}${c.critical ? ` · ${c.critical} critical` : ''}`,
+  [DATA_LANDSCAPE_TITLE]: (c) => `${c.index} index${c.index !== 1 ? 'es' : ''}`,
+  [DASHBOARDS_TITLE]: (c) => `${c.dashboard} dashboard${c.dashboard !== 1 ? 's' : ''}`,
+  [SHORTHAND_TITLE]: (c) => `${c.macro} macro${c.macro !== 1 ? 's' : ''} · ${c.lookup} lookup${c.lookup !== 1 ? 's' : ''}`,
+  [OWNERSHIP_TITLE]: (c) => (c.owners ? `${c.owners} owner${c.owners !== 1 ? 's' : ''}` : 'ownership'),
+  [ML_TITLE]: (c) =>
+    `${c.mltkAlgorithms} algorithm${c.mltkAlgorithms !== 1 ? 's' : ''}${c.mltkModels ? ` · ${c.mltkModels} models` : ' · no trained models'}`,
+};
+
+// Keep card descriptions to the design's concise 1–2 sentences rather than the
+// LLM's full SPL explanation paragraph.
+function truncateToSentences(text: string, n = 2): string {
+  if (!text) return '';
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+  return sentences.slice(0, n).join(' ').trim();
+}
+
+// Flatten markdown to plain prose so we can lift a short section lead from it.
+function stripMarkdown(md: string): string {
+  return (md || '')
+    .replace(/```[\s\S]*?```/g, ' ') // fenced code (incl. dependency-chain trees)
+    .replace(/`[^`]*`/g, ' ') // inline code
+    .replace(/^#{1,6}\s.*$/gm, ' ') // headings
+    .replace(/[*_>#[\]]/g, ' ') // markdown punctuation
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function leadText(md: string): string {
+  return truncateToSentences(stripMarkdown(md), 2);
+}
+
 export default function GuideView({ goto }: Props) {
   const { guide, guideError, counts, graph, findings, graphFocus, setGraphFocus, loadGuide, env } = useCairn();
   const scrollRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<HTMLDivElement>(null);
   const refs = useRef<(HTMLElement | null)[]>([]);
   const [active, setActive] = useState(0);
-  const [closed, setClosed] = useState<Set<number>>(new Set());
 
   useEffect(() => { loadGuide(); }, [loadGuide]);
 
@@ -83,16 +104,8 @@ export default function GuideView({ goto }: Props) {
     if (el && c) c.scrollTo({ top: el.offsetTop - 16, behavior: 'smooth' });
   }
 
-  function toggleSection(i: number) {
-    setClosed((prev) => {
-      const next = new Set(prev);
-      if (next.has(i)) next.delete(i); else next.add(i);
-      return next;
-    });
-  }
-
-  // Resolve a clicked Splunk-object chip into a highlighted graph chain + an
-  // expanded/scrolled section.
+  // Resolve a clicked Splunk-object name into a highlighted graph chain and a
+  // scrolled-to section.
   function focusTerm(term: string) {
     const t = term.trim().toLowerCase();
     if (!t) return;
@@ -100,19 +113,9 @@ export default function GuideView({ goto }: Props) {
       graph.nodes.find((n) => n.name.toLowerCase() === t) ??
       graph.nodes.find((n) => t.includes(n.name.toLowerCase()));
     setGraphFocus(node ? node.id : null);
-
     const idx = sections.findIndex((s) => s.title.toLowerCase().includes(t) || s.content.toLowerCase().includes(t));
-    if (idx >= 0) {
-      setClosed((prev) => {
-        if (!prev.has(idx)) return prev;
-        const next = new Set(prev);
-        next.delete(idx);
-        return next;
-      });
-      requestAnimationFrame(() => jump(idx));
-    } else if (node) {
-      graphRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    if (idx >= 0) requestAnimationFrame(() => jump(idx));
+    else if (node) graphRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   const envLine = envSummaryLine(env);
@@ -171,17 +174,17 @@ export default function GuideView({ goto }: Props) {
         </div>
       </aside>
 
-      {/* document — position:relative so section.offsetTop is measured against
-          this scroll container (TOC jump + scroll-spy depend on that). */}
+      {/* document */}
       <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflowY: 'auto', position: 'relative' }}>
         <div style={{ maxWidth: 880, margin: '0 auto', padding: '40px 48px 120px' }}>
+          {/* hero */}
           <Eyebrow>mode a · the guide</Eyebrow>
           <h1 className="display" style={{ fontSize: 38, marginTop: 14 }}>
             The guide you wish<br />someone had left you.
           </h1>
           <p style={{ color: 'var(--text-2)', fontSize: 16, maxWidth: 560, marginTop: 14 }}>
             {envLine
-              ? `Synthesised from one exploration pass of your ${envLine} deployment. Every claim traces back to a real object.`
+              ? `${sections.length} sections, synthesised from one exploration pass of your ${envLine} deployment. Every claim traces back to a real object.`
               : 'Synthesised from one exploration pass. Every claim traces back to a real object.'}
           </p>
 
@@ -204,18 +207,9 @@ export default function GuideView({ goto }: Props) {
 
           {/* sections */}
           {sections.map((s, i) => (
-            <GuideSectionCard
-              key={i}
-              ref={(el) => { refs.current[i] = el; }}
-              n={i + 1}
-              section={s}
-              counts={counts}
-              open={!closed.has(i)}
-              onToggle={() => toggleSection(i)}
-              onChipClick={focusTerm}
-              topSlot={s.title === DATA_LANDSCAPE_TITLE ? <IndexTileGrid tiles={indexTiles} /> : undefined}
-              rich={renderRichSection(s.title, guide.structured, focusTerm)}
-            />
+            <Section key={i} ref={(el) => { refs.current[i] = el; }} n={i + 1} title={s.title} sub={SECTION_SUB[s.title]?.(counts) ?? ''}>
+              <SectionBody section={s} structured={guide.structured} tiles={indexTiles} onChip={focusTerm} />
+            </Section>
           ))}
 
           {/* footer */}
@@ -233,6 +227,347 @@ export default function GuideView({ goto }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Section shell ─────────────────────────────────────────────────────────────
+interface SectionProps {
+  n: number;
+  title: string;
+  sub: string;
+  children: ReactNode;
+  ref?: React.Ref<HTMLElement>;
+}
+function Section({ n, title, sub, children, ref }: SectionProps) {
+  return (
+    <section ref={ref} style={{ marginTop: 54, scrollMarginTop: 20 }}>
+      <div className="row gap-3" style={{ alignItems: 'baseline', marginBottom: 6 }}>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--ember)' }}>{String(n).padStart(2, '0')}</span>
+        <h2 style={{ fontSize: 26 }}>{title}</h2>
+      </div>
+      {sub && <div className="eyebrow" style={{ marginBottom: 14 }}>{sub}</div>}
+      {children}
+    </section>
+  );
+}
+
+// ── Section body dispatcher ───────────────────────────────────────────────────
+function SectionBody({
+  section,
+  structured,
+  tiles,
+  onChip,
+}: {
+  section: GuideSection;
+  structured?: StructuredData;
+  tiles: Tile[];
+  onChip: (t: string) => void;
+}) {
+  const lead = leadText(section.content);
+  const Lead = lead ? <p className="sec-lead">{lead}</p> : null;
+
+  switch (section.title) {
+    case ALERTS_TITLE:
+      if (structured?.alerts.length) {
+        return (
+          <>
+            {Lead}
+            {structured.alerts.map((a) => (
+              <AlertCard key={a.name} a={a} onChip={onChip} />
+            ))}
+          </>
+        );
+      }
+      break;
+    case DATA_LANDSCAPE_TITLE:
+      return (
+        <>
+          {Lead}
+          <IndexTileGrid tiles={tiles} />
+          <Markdown content={section.content} onChip={onChip} />
+        </>
+      );
+    case DASHBOARDS_TITLE:
+      if (structured?.dashboards.length) {
+        return (
+          <>
+            {Lead}
+            {structured.dashboards.map((d) => (
+              <DashboardCard key={d.name} d={d} onChip={onChip} />
+            ))}
+          </>
+        );
+      }
+      break;
+    case SHORTHAND_TITLE:
+      if (structured?.macros.length || structured?.lookups.length) {
+        return <ShorthandSection lead={Lead} macros={structured?.macros ?? []} lookups={structured?.lookups ?? []} onChip={onChip} />;
+      }
+      break;
+    case OWNERSHIP_TITLE: {
+      const ownership = structured ? <OwnershipSection lead={Lead} data={structured} /> : null;
+      if (ownership) return ownership;
+      break;
+    }
+    case ML_TITLE:
+      if (structured?.mltk_algorithms.length) {
+        return <MLSection lead={Lead} algorithms={structured.mltk_algorithms} models={structured.mltk_models} />;
+      }
+      break;
+    default:
+      break;
+  }
+
+  // Fallback: render the section markdown directly.
+  return <Markdown content={section.content} onChip={onChip} />;
+}
+
+function Markdown({ content, onChip }: { content: string; onChip?: (t: string) => void }) {
+  if (!content?.trim()) return <SkeletonText lines={5} />;
+  function handleClick(e: React.MouseEvent) {
+    if (!onChip) return;
+    const target = e.target as HTMLElement;
+    if (target.classList.contains('chip-clickable')) {
+      const term = target.getAttribute('data-term');
+      if (term) onChip(term);
+    }
+  }
+  return <div className="markdown-body" onClick={handleClick} dangerouslySetInnerHTML={{ __html: markdownToHtml(content) }} />;
+}
+
+// ── Alerts ────────────────────────────────────────────────────────────────────
+function AlertCard({ a, onChip }: { a: StructuredAlert; onChip: (t: string) => void }) {
+  const crit = a.severity?.toLowerCase() === 'critical';
+  const desc = truncateToSentences(a.spl_explanation, 2);
+  return (
+    <div className="card" style={{ padding: 22, marginTop: 16, borderLeft: crit ? '2px solid var(--sev-high)' : '1px solid var(--line)' }}>
+      <div className="row" style={{ justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+        <h3 style={{ fontSize: 18, cursor: 'pointer' }} onClick={() => onChip(a.name)}>{a.name}</h3>
+        <SeverityBadge level={a.severity} />
+      </div>
+      {desc && <p style={{ color: 'var(--text-2)', marginTop: 10, marginBottom: 16 }}>{desc}</p>}
+      {a.chain.length > 0 && (
+        <>
+          <Eyebrow style={{ marginBottom: 10 }}>dependency chain</Eyebrow>
+          <Chain chain={a.chain.map((c) => ({ type: c.type, id: c.name }))} />
+        </>
+      )}
+      {a.spl && <div style={{ marginTop: 16 }}><CodeBlock code={a.spl} /></div>}
+      <div className="row gap-2" style={{ marginTop: 12, fontSize: 12.5, color: 'var(--text-3)', flexWrap: 'wrap' }}>
+        {a.cron && <><span className="mono">runs {a.cron}</span><span>·</span></>}
+        <span className="mono">action: {a.actions || 'none'}</span>
+        {a.owner && <><span>·</span><span className="mono">owner: {a.owner}</span></>}
+      </div>
+    </div>
+  );
+}
+
+// ── Dashboards ────────────────────────────────────────────────────────────────
+function DashboardCard({ d, onChip }: { d: StructuredDashboard; onChip: (t: string) => void }) {
+  return (
+    <div className="card" style={{ padding: 20, marginTop: 14 }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <h3 style={{ fontSize: 17 }}>{d.name.replace(/_/g, ' ')}</h3>
+        {d.panelCount > 0 && <span className="pill"><Icons.dot size={9} /> {d.panelCount} panels</span>}
+      </div>
+      {d.indexes.length > 0 && (
+        <div className="row gap-2" style={{ flexWrap: 'wrap', marginTop: 12 }}>
+          {d.indexes.map((r) => (
+            <span key={r} onClick={() => onChip(r)} style={{ cursor: 'pointer' }}>
+              <NodeChip type="index" label={r} />
+            </span>
+          ))}
+        </div>
+      )}
+      {d.owner && (
+        <p style={{ color: 'var(--text-3)', fontSize: 13, margin: '10px 0 0' }}>
+          owner: <span className="mono" style={{ color: 'var(--text-2)' }}>{d.owner}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── The Shorthand (macros + lookups) ──────────────────────────────────────────
+function ShorthandSection({
+  lead,
+  macros,
+  lookups,
+  onChip,
+}: {
+  lead: ReactNode;
+  macros: StructuredMacro[];
+  lookups: StructuredLookup[];
+  onChip: (t: string) => void;
+}) {
+  return (
+    <>
+      {lead}
+      {macros.length > 0 && (
+        <>
+          <Eyebrow style={{ margin: '20px 0 12px' }}>macros</Eyebrow>
+          {macros.map((m) => (
+            <ShorthandRow key={m.name} type="macro" name={m.name} def={m.definition} usedBy={m.usedBy.map((u) => u.name)} onChip={onChip} />
+          ))}
+        </>
+      )}
+      {lookups.length > 0 && (
+        <>
+          <Eyebrow style={{ margin: '22px 0 12px' }}>lookups</Eyebrow>
+          {lookups.map((l) => (
+            <ShorthandRow key={l.name} type="lookup" name={l.name} usedBy={l.usedBy.map((u) => u.name)} onChip={onChip} />
+          ))}
+        </>
+      )}
+    </>
+  );
+}
+
+function ShorthandRow({
+  type,
+  name,
+  def,
+  usedBy,
+  onChip,
+}: {
+  type: string;
+  name: string;
+  def?: string;
+  usedBy: string[];
+  onChip: (t: string) => void;
+}) {
+  const orphan = usedBy.length === 0;
+  return (
+    <div
+      className="card"
+      style={{
+        padding: 16,
+        marginBottom: 10,
+        opacity: orphan ? 0.86 : 1,
+        borderColor: orphan ? 'color-mix(in srgb, var(--sev-med) 35%, transparent)' : 'var(--line)',
+      }}
+    >
+      <div className="row" style={{ justifyContent: 'space-between', gap: 12 }}>
+        <span onClick={() => onChip(name)} style={{ cursor: 'pointer' }}>
+          <NodeChip type={type} label={name} />
+        </span>
+        {orphan ? (
+          <span className="pill" style={{ color: 'var(--sev-med)', borderColor: 'color-mix(in srgb, var(--sev-med) 45%, transparent)' }}>
+            orphaned · 0 refs
+          </span>
+        ) : (
+          <span className="pill" style={{ color: 'var(--good)', borderColor: 'rgba(127,169,140,0.44)' }}>
+            used ×{usedBy.length}
+          </span>
+        )}
+      </div>
+      {def && <div style={{ marginTop: 12 }}><CodeBlock code={def} pad="10px 14px" /></div>}
+      {usedBy.length > 0 && (
+        <p style={{ color: 'var(--text-3)', fontSize: 13, margin: '10px 0 0' }}>
+          used by <span className="mono" style={{ color: 'var(--text-2)' }}>{usedBy.join(', ')}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Who Knows What (ownership / bus factor) ───────────────────────────────────
+function OwnershipSection({ lead, data }: { lead: ReactNode; data: StructuredData }): ReactNode {
+  const counts = new Map<string, number>();
+  const bump = (owner: string) => { if (owner) counts.set(owner, (counts.get(owner) ?? 0) + 1); };
+  data.alerts.forEach((a) => bump(a.owner));
+  data.saved_searches.forEach((s) => bump(s.owner));
+  data.dashboards.forEach((d) => bump(d.owner));
+
+  const owners = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  if (owners.length === 0) return null;
+
+  const total = owners.reduce((sum, [, c]) => sum + c, 0);
+  const [topOwner, topCount] = owners[0];
+  const busFactor = total >= 3 && topCount / total >= 0.6;
+  const roleFor = (name: string) => data.users.find((u) => u.name === name)?.roles || '';
+  const alertCount = data.alerts.filter((a) => a.owner === topOwner).length;
+  const searchCount = data.saved_searches.filter((s) => s.owner === topOwner).length;
+
+  return (
+    <>
+      {lead}
+      {busFactor && (
+        <div className="card" style={{ padding: 22, marginTop: 16, borderLeft: '2px solid var(--sev-med)' }}>
+          <div className="row gap-3">
+            <Icons.alert size={18} style={{ color: 'var(--sev-med)' }} />
+            <h3 style={{ fontSize: 17 }}>Bus factor: {owners.length === 1 ? 'one' : owners.length}</h3>
+          </div>
+          <p style={{ color: 'var(--text-2)', marginTop: 10, marginBottom: 0 }}>
+            <strong style={{ color: 'var(--text)' }}>{topOwner}</strong> owns {topCount} of {total} objects
+            {alertCount || searchCount ? ` (${alertCount} alert${alertCount !== 1 ? 's' : ''}, ${searchCount} saved search${searchCount !== 1 ? 'es' : ''})` : ''}. If
+            they leave, most of this environment's knowledge leaves with them — start spreading ownership.
+          </p>
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 16 }}>
+        {owners.map(([name, c]) => (
+          <div key={name} className="card" style={{ padding: 18 }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <h4 style={{ fontSize: 15 }}>{name}</h4>
+              <span className="pill">{c} object{c !== 1 ? 's' : ''}</span>
+            </div>
+            {roleFor(name) && (
+              <p style={{ color: 'var(--text-3)', fontSize: 12.5, margin: '8px 0 0', fontFamily: 'var(--mono)' }}>{roleFor(name)}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// ── AI & ML Footprint ─────────────────────────────────────────────────────────
+const ML_CATEGORIES: { key: string; label: string; desc: string; match: string[] }[] = [
+  { key: 'anomaly', label: 'Anomaly detection', desc: 'Surface login anomalies or system outliers', match: ['LocalOutlierFactor', 'MultivariateOutlierDetection', 'OneClassSVM', 'DBSCAN'] },
+  { key: 'forecasting', label: 'Forecasting', desc: 'Predict future values in time-series', match: ['ARIMA', 'AutoPrediction', 'StateSpaceForecast', 'PACF', 'ACF', 'Kalman'] },
+  { key: 'clustering', label: 'Clustering', desc: 'Group similar users, apps or systems', match: ['KMeans', 'XMeans', 'Birch', 'GMeans', 'SpectralClustering'] },
+  { key: 'classification', label: 'Classification', desc: 'Classify events or entities', match: ['DecisionTreeClassifier', 'GradientBoostingClassifier', 'LogisticRegression', 'RandomForestClassifier', 'SVM', 'BernoulliNB', 'GaussianNB', 'MLPClassifier'] },
+];
+
+function MLSection({ lead, algorithms, models }: { lead: ReactNode; algorithms: string[]; models: string[] }) {
+  const used = new Set<string>();
+  const groups = ML_CATEGORIES.map((cat) => {
+    const items = algorithms.filter((a) => cat.match.some((m) => a.toLowerCase().includes(m.toLowerCase())));
+    items.forEach((i) => used.add(i));
+    return { ...cat, items };
+  }).filter((g) => g.items.length > 0);
+
+  const other = algorithms.filter((a) => !used.has(a));
+  if (other.length) groups.push({ key: 'other', label: 'Other algorithms', desc: 'Additional MLTK algorithms available', match: [], items: other });
+
+  return (
+    <>
+      <div className="row gap-3" style={{ marginBottom: 4, flexWrap: 'wrap' }}>
+        <span className="pill" style={{ color: 'var(--ember-text)', borderColor: 'var(--ember-line)' }}>
+          <Icons.spark size={12} /> ML Toolkit detected
+        </span>
+        <span className="mono" style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
+          {algorithms.length} algorithms · {models.length} trained model{models.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+      {lead && <div style={{ marginTop: 12 }}>{lead}</div>}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 16 }}>
+        {groups.map((g) => (
+          <div key={g.key} className="card" style={{ padding: 16 }}>
+            <h4 style={{ fontSize: 14.5 }}>{g.label}</h4>
+            <div className="row gap-2" style={{ flexWrap: 'wrap', margin: '10px 0' }}>
+              {g.items.map((it) => (
+                <span key={it} className="mono" style={{ fontSize: 11, color: 'var(--text-2)', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 5, padding: '2px 7px' }}>
+                  {it}
+                </span>
+              ))}
+            </div>
+            <p style={{ fontSize: 12.5, color: 'var(--text-3)', margin: 0 }}>{g.desc}</p>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -276,398 +611,6 @@ function IndexTileGrid({ tiles }: { tiles: Tile[] }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-// ── Section card ──────────────────────────────────────────────────────────────
-function isThinSection(content: string): boolean {
-  const stripped = content.replace(/[#*`_[\]]/g, '').trim();
-  if (stripped.length < 200) return true;
-  const thin = ['no ownership signals', 'no specific guidance', 'not currently used by any', 'there are no', 'no data available', 'no results found', 'could not be generated', 'rate limit'];
-  return thin.some((p) => stripped.toLowerCase().includes(p));
-}
-const THIN_HINTS: Record<string, string> = {
-  'Who Knows What': 'With more usage data in _audit, this section maps who created and most frequently uses each object — showing you exactly who to ask about what.',
-  'The Shorthand': 'As more macros and lookups are used across saved searches, this section traces where each shorthand appears and why it was created.',
-  "Your Team's Dashboards": 'With dashboard panel SPL queries, this section explains exactly what metrics each dashboard tracks.',
-};
-function thinHint(title: string, content: string): string {
-  const lower = content.toLowerCase();
-  if (lower.includes('rate limit') || lower.includes('could not be generated')) {
-    return 'This section will populate when the AI service is available. Try re-exploring.';
-  }
-  return THIN_HINTS[title] ?? 'This section needs more environment data to be fully useful.';
-}
-
-interface CardProps {
-  n: number;
-  section: GuideSection;
-  counts: Counts;
-  open: boolean;
-  onToggle: () => void;
-  onChipClick: (term: string) => void;
-  topSlot?: ReactNode;
-  // Rich, structured rendering for this section. When present it replaces the
-  // markdown body; when null we fall back to markdown (with the thin-section
-  // treatment as before).
-  rich?: ReactNode;
-}
-
-const GuideSectionCard = forwardRef<HTMLElement, CardProps>(function GuideSectionCard(
-  { n, section, counts, open, onToggle, onChipClick, topSlot, rich },
-  ref,
-) {
-  const meta = SECTION_META[section.title] ?? { accent: 'var(--line)', summary: () => '' };
-  const sub = meta.summary(counts);
-
-  function handleBodyClick(e: React.MouseEvent) {
-    const target = e.target as HTMLElement;
-    if (target.classList.contains('chip-clickable')) {
-      const term = target.getAttribute('data-term');
-      if (term) onChipClick(term);
-    }
-  }
-
-  // Rich sections are never "thin" — they carry real structured content.
-  if (!rich && isThinSection(section.content || '')) {
-    return (
-      <section ref={ref} style={{ marginTop: 54, scrollMarginTop: 20 }}>
-        <div className="row gap-3" style={{ alignItems: 'baseline', marginBottom: 6 }}>
-          <span style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--ember)' }}>{String(n).padStart(2, '0')}</span>
-          <h2 style={{ fontSize: 26 }}>{section.title}</h2>
-        </div>
-        <div className="card" style={{ padding: 18, marginTop: 12, opacity: 0.85 }}>
-          <p style={{ color: 'var(--text-3)', fontSize: 13.5, margin: 0 }}>{thinHint(section.title, section.content || '')}</p>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section ref={ref} style={{ marginTop: 54, scrollMarginTop: 20, ['--section-accent' as string]: meta.accent }}>
-      <button
-        onClick={onToggle}
-        style={{ display: 'flex', width: '100%', textAlign: 'left', alignItems: 'baseline', gap: 12, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
-      >
-        <span style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--ember)' }}>{String(n).padStart(2, '0')}</span>
-        <span className="grow">
-          <h2 style={{ fontSize: 26 }}>{section.title}</h2>
-        </span>
-        <span style={{ fontFamily: 'var(--mono)', fontSize: 20, color: 'var(--text-3)' }}>{open ? '−' : '+'}</span>
-      </button>
-      {sub && <div className="eyebrow" style={{ marginTop: 6, marginBottom: 14 }}>{sub}</div>}
-      {open &&
-        (rich ? (
-          <div style={{ marginTop: 4 }}>
-            {topSlot}
-            {rich}
-          </div>
-        ) : (
-          <div className="markdown-body" onClick={handleBodyClick}>
-            {topSlot}
-            {section.content?.trim() ? (
-              <div dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content) }} />
-            ) : (
-              <SkeletonText lines={5} />
-            )}
-          </div>
-        ))}
-    </section>
-  );
-});
-
-// ── Rich structured cards (Mode A) ───────────────────────────────────────────
-
-// Map a section title to its rich renderer. Returns null when there's no
-// structured data for it, so the card falls back to markdown.
-function renderRichSection(
-  title: string,
-  s: StructuredData | undefined,
-  onChip: (term: string) => void,
-): ReactNode | null {
-  if (!s) return null;
-  switch (title) {
-    case ALERTS_TITLE:
-      return s.alerts.length ? <AlertCards alerts={s.alerts} onChip={onChip} /> : null;
-    case DASHBOARDS_TITLE:
-      return s.dashboards.length ? <DashboardCards dashboards={s.dashboards} onChip={onChip} /> : null;
-    case SHORTHAND_TITLE:
-      return s.macros.length || s.lookups.length ? <ShorthandCards macros={s.macros} lookups={s.lookups} onChip={onChip} /> : null;
-    case OWNERSHIP_TITLE: {
-      const cards = <OwnershipCards data={s} />;
-      return cards ? cards : null;
-    }
-    case ML_TITLE:
-      return s.mltk_algorithms.length ? <MLFootprint algorithms={s.mltk_algorithms} models={s.mltk_models} /> : null;
-    default:
-      return null;
-  }
-}
-
-// chip glyph + class per object type, matching the dependency-graph palette.
-const CHAIN_GLYPH: Record<string, string> = {
-  alert: '△', saved_search: '◇', macro: '◇', lookup: '▫', index: '▪', sourcetype: '▪',
-};
-function chainClass(type: string): string {
-  return `chain-chip chain-${type}`;
-}
-
-function ChainChip({ node, onChip }: { node: ObjectRef; onChip?: (t: string) => void }) {
-  return (
-    <button
-      type="button"
-      className={chainClass(node.type)}
-      onClick={onChip ? () => onChip(node.name) : undefined}
-      style={{ cursor: onChip ? 'pointer' : 'default' }}
-      title={`${node.type}: ${node.name}`}
-    >
-      {CHAIN_GLYPH[node.type] ?? '▪'} {node.name}
-    </button>
-  );
-}
-
-function ChainFlow({ chain, onChip }: { chain: ObjectRef[]; onChip?: (t: string) => void }) {
-  if (!chain.length) return null;
-  return (
-    <div className="chain-flow">
-      {chain.map((dep, i) => (
-        <Fragment key={`${dep.type}:${dep.name}`}>
-          {i > 0 && <span className="chain-arrow">→</span>}
-          <ChainChip node={dep} onChip={onChip} />
-        </Fragment>
-      ))}
-    </div>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  if (!text) return null;
-  return (
-    <button
-      type="button"
-      className="copy-btn"
-      onClick={() => {
-        navigator.clipboard?.writeText(text).then(
-          () => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1400);
-          },
-          () => {},
-        );
-      }}
-    >
-      {copied ? 'copied' : 'copy'}
-    </button>
-  );
-}
-
-function SplBlock({ spl }: { spl: string }) {
-  if (!spl?.trim()) return null;
-  return (
-    <div className="spl-block">
-      <code>{spl}</code>
-      <CopyButton text={spl} />
-    </div>
-  );
-}
-
-function SevBadge({ severity }: { severity: string }) {
-  const sev = severity?.toLowerCase() === 'critical' ? 'critical' : severity?.toLowerCase() === 'info' ? 'info' : 'warning';
-  return <span className={`sev-badge sev-${sev}`}>● {sev}</span>;
-}
-
-function AlertCards({ alerts, onChip }: { alerts: StructuredData['alerts']; onChip: (t: string) => void }) {
-  return (
-    <div>
-      {alerts.map((a) => (
-        <div className="rich-card alert-card" key={a.name}>
-          <div className="rich-card-head">
-            <h4>{a.name}</h4>
-            <SevBadge severity={a.severity} />
-          </div>
-          {a.spl_explanation && <p className="rich-card-desc">{a.spl_explanation}</p>}
-          {a.chain.length > 0 && (
-            <>
-              <div className="eyebrow" style={{ marginTop: 14 }}>dependency chain</div>
-              <ChainFlow chain={a.chain} onChip={onChip} />
-            </>
-          )}
-          <SplBlock spl={a.spl} />
-          <div className="rich-meta">
-            {a.cron && <span>runs {a.cron}</span>}
-            <span>{a.actions ? `action: ${a.actions}` : 'no alert action'}</span>
-            {a.owner && <span>owner: {a.owner}</span>}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function DashboardCards({ dashboards, onChip }: { dashboards: StructuredData['dashboards']; onChip: (t: string) => void }) {
-  return (
-    <div>
-      {dashboards.map((d) => (
-        <div className="rich-card dash-card" key={d.name}>
-          <div className="rich-card-head">
-            <h4>{d.name.replace(/_/g, ' ')}</h4>
-            {d.panelCount > 0 && <span className="panel-count">{d.panelCount} panels</span>}
-          </div>
-          {d.indexes.length > 0 && (
-            <div className="chain-flow" style={{ marginTop: 10 }}>
-              {d.indexes.map((idx) => (
-                <ChainChip key={idx} node={{ name: idx, type: 'index' }} onChip={onChip} />
-              ))}
-            </div>
-          )}
-          {d.owner && <div className="rich-meta"><span>owner: {d.owner}</span></div>}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function UsedByRow({ usedBy, onChip }: { usedBy: ObjectRef[]; onChip: (t: string) => void }) {
-  if (!usedBy.length) return <div className="used-by used-by-none">not referenced by any object</div>;
-  return (
-    <div className="chain-flow" style={{ marginTop: 8 }}>
-      <span className="used-by-label">used by</span>
-      {usedBy.map((u) => (
-        <ChainChip key={`${u.type}:${u.name}`} node={u} onChip={onChip} />
-      ))}
-    </div>
-  );
-}
-
-function ShorthandCards({
-  macros,
-  lookups,
-  onChip,
-}: {
-  macros: StructuredData['macros'];
-  lookups: StructuredData['lookups'];
-  onChip: (t: string) => void;
-}) {
-  return (
-    <div>
-      {macros.length > 0 && (
-        <>
-          <div className="eyebrow" style={{ marginBottom: 10 }}>macros</div>
-          {macros.map((m) => (
-            <div className="rich-card macro-card" key={m.name}>
-              <div className="rich-card-head">
-                <ChainChip node={{ name: m.name, type: 'macro' }} onChip={onChip} />
-                {m.usedBy.length > 0 && <span className="used-count">used × {m.usedBy.length}</span>}
-              </div>
-              <SplBlock spl={m.definition} />
-              <UsedByRow usedBy={m.usedBy} onChip={onChip} />
-            </div>
-          ))}
-        </>
-      )}
-      {lookups.length > 0 && (
-        <>
-          <div className="eyebrow" style={{ margin: '22px 0 10px' }}>lookups</div>
-          {lookups.map((l) => (
-            <div className="rich-card macro-card" key={l.name}>
-              <div className="rich-card-head">
-                <ChainChip node={{ name: l.name, type: 'lookup' }} onChip={onChip} />
-                {l.usedBy.length > 0 && <span className="used-count">used × {l.usedBy.length}</span>}
-              </div>
-              <UsedByRow usedBy={l.usedBy} onChip={onChip} />
-            </div>
-          ))}
-        </>
-      )}
-    </div>
-  );
-}
-
-// Group MLTK algorithm names into the four MLTK families. Anything unmatched
-// falls into "other" so nothing is dropped.
-const ML_CATEGORIES: { key: string; label: string; desc: string; match: string[] }[] = [
-  { key: 'anomaly', label: 'Anomaly detection', desc: 'Surface login anomalies or system outliers', match: ['LocalOutlierFactor', 'MultivariateOutlierDetection', 'OneClassSVM', 'DBSCAN'] },
-  { key: 'forecasting', label: 'Forecasting', desc: 'Predict future values in time-series', match: ['ARIMA', 'AutoPrediction', 'StateSpaceForecast', 'PACF', 'ACF', 'Kalman'] },
-  { key: 'clustering', label: 'Clustering', desc: 'Group similar users, apps or systems', match: ['KMeans', 'XMeans', 'Birch', 'GMeans', 'SpectralClustering'] },
-  { key: 'classification', label: 'Classification', desc: 'Classify events or entities', match: ['DecisionTreeClassifier', 'GradientBoostingClassifier', 'LogisticRegression', 'RandomForestClassifier', 'SVM', 'BernoulliNB', 'GaussianNB', 'MLPClassifier'] },
-];
-
-function MLFootprint({ algorithms, models }: { algorithms: string[]; models: string[] }) {
-  const used = new Set<string>();
-  const groups = ML_CATEGORIES.map((cat) => {
-    const items = algorithms.filter((a) => cat.match.some((m) => a.toLowerCase().includes(m.toLowerCase())));
-    items.forEach((i) => used.add(i));
-    return { ...cat, items };
-  }).filter((g) => g.items.length > 0);
-
-  const other = algorithms.filter((a) => !used.has(a));
-  if (other.length) groups.push({ key: 'other', label: 'Other algorithms', desc: 'Additional MLTK algorithms available', match: [], items: other });
-
-  return (
-    <div>
-      <div className="ml-grid">
-        {groups.map((g) => (
-          <div className="rich-card ml-card" key={g.key}>
-            <h4>{g.label}</h4>
-            <div className="ml-chips">
-              {g.items.map((it) => (
-                <span className="ml-chip" key={it}>{it}</span>
-              ))}
-            </div>
-            <div className="ml-card-desc">{g.desc}</div>
-          </div>
-        ))}
-      </div>
-      <div className="rich-meta" style={{ marginTop: 14 }}>
-        <span>{algorithms.length} algorithms available</span>
-        <span>{models.length ? `${models.length} trained model${models.length !== 1 ? 's' : ''}` : 'no trained models yet'}</span>
-      </div>
-    </div>
-  );
-}
-
-function OwnershipCards({ data }: { data: StructuredData }): ReactNode | null {
-  // Tally ownership across the owned object types.
-  const counts = new Map<string, number>();
-  const bump = (owner: string) => {
-    if (owner) counts.set(owner, (counts.get(owner) ?? 0) + 1);
-  };
-  data.alerts.forEach((a) => bump(a.owner));
-  data.saved_searches.forEach((s) => bump(s.owner));
-  data.dashboards.forEach((d) => bump(d.owner));
-
-  const owners = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  if (owners.length === 0) return null;
-
-  const total = owners.reduce((sum, [, c]) => sum + c, 0);
-  const [topOwner, topCount] = owners[0];
-  const busFactor = total >= 3 && topCount / total >= 0.6;
-  const roleFor = (name: string) => data.users.find((u) => u.name === name)?.roles || '';
-
-  return (
-    <div>
-      {busFactor && (
-        <div className="bus-factor-card">
-          <h4>⚠ Bus-factor risk</h4>
-          <p>
-            <b>{topOwner}</b> owns {topCount} of {total} objects ({Math.round((topCount / total) * 100)}%). If they leave,
-            most of this environment's knowledge leaves with them — start spreading ownership.
-          </p>
-        </div>
-      )}
-      <div className="owner-grid">
-        {owners.map(([name, c]) => (
-          <div className="rich-card owner-card" key={name}>
-            <div className="rich-card-head">
-              <h4>{name}</h4>
-              <span className="used-count">{c} object{c !== 1 ? 's' : ''}</span>
-            </div>
-            {roleFor(name) && <div className="rich-meta"><span>{roleFor(name)}</span></div>}
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
