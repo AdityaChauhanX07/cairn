@@ -3,9 +3,13 @@
 // (GraphNode / GraphEdge) directly — `saved_search` nodes are drawn on the
 // `search` layer to match the design's alert → saved → macro → lookup → index
 // hierarchy.
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { NODE_TONE } from './Primitives';
 import type { GraphNode, GraphEdge } from '../types';
+
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 3;
+const clampZoom = (z: number) => Math.min(Math.max(z, ZOOM_MIN), ZOOM_MAX);
 
 interface Props {
   nodes: GraphNode[];
@@ -32,6 +36,57 @@ function layerOf(type: string): string {
 export default function RelationshipGraph({
   nodes, edges, deadNodeIds = [], selected, onSelect, focusNode, height = 440, hint = true,
 }: Props) {
+  // ---- pan / zoom ----
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  // Drag bookkeeping kept in refs so the move handler reads fresh values
+  // without re-subscribing, and so a drag can suppress the click-to-deselect.
+  const dragStart = useRef({ px: 0, py: 0, panX: 0, panY: 0 });
+  const draggingRef = useRef(false);
+  const movedRef = useRef(false);
+
+  // Wheel-zoom via a native, non-passive listener — React's synthetic onWheel
+  // is registered passive on the root, so e.preventDefault() there is a no-op
+  // (and the page would keep scrolling). Scoped to the graph container, so the
+  // wheel is only captured while the cursor is over the graph.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      setZoom((z) => clampZoom(z + delta));
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    // Only start a pan from empty graph space, not from a node.
+    if ((e.target as Element).tagName !== 'svg') return;
+    draggingRef.current = true;
+    movedRef.current = false;
+    setDragging(true);
+    dragStart.current = { px: e.clientX, py: e.clientY, panX: pan.x, panY: pan.y };
+  };
+  const onMouseMove = (e: React.MouseEvent) => {
+    if (!draggingRef.current) return;
+    const dx = e.clientX - dragStart.current.px;
+    const dy = e.clientY - dragStart.current.py;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) movedRef.current = true;
+    setPan({ x: dragStart.current.panX + dx, y: dragStart.current.panY + dy });
+  };
+  const endDrag = () => {
+    draggingRef.current = false;
+    setDragging(false);
+  };
+  const resetView = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
   // Position nodes across their layer, evenly spaced.
   const pos = useMemo(() => {
     const p: Record<string, { x: number; y: number; node: GraphNode }> = {};
@@ -82,18 +137,32 @@ export default function RelationshipGraph({
 
   if (edges.length === 0) return null;
 
+  const groupTransform = `translate(${pan.x}, ${pan.y}) translate(${W / 2}, ${H / 2}) scale(${zoom}) translate(${-W / 2}, ${-H / 2})`;
+
   return (
-    <div style={{ position: 'relative', width: '100%' }}>
+    <div
+      ref={containerRef}
+      style={{ position: 'relative', width: '100%' }}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={endDrag}
+      onMouseLeave={endDrag}
+    >
       {hint && (
         <div style={{ position: 'absolute', top: 14, right: 18, zIndex: 3 }} className="eyebrow">
           {active ? 'tracing dependency chain' : 'click any node to trace its chain'}
         </div>
       )}
+      <div style={{ position: 'relative' }}>
       <svg
         viewBox={`0 0 ${W} ${H}`}
         width="100%"
-        style={{ height, display: 'block' }}
-        onClick={() => onSelect && onSelect(null)}
+        style={{ height, display: 'block', cursor: dragging ? 'grabbing' : 'grab' }}
+        onClick={() => {
+          // A pan ends with a click too — don't let it clear the selection.
+          if (movedRef.current) { movedRef.current = false; return; }
+          onSelect && onSelect(null);
+        }}
         role="img"
         aria-label="Relationship graph of Splunk knowledge objects"
       >
@@ -104,6 +173,7 @@ export default function RelationshipGraph({
           </linearGradient>
         </defs>
 
+        <g transform={groupTransform}>
         {/* layer labels */}
         {LAYERS.map((l) => (
           <text
@@ -195,7 +265,13 @@ export default function RelationshipGraph({
             );
           })}
         </g>
+        </g>
       </svg>
+
+      <button onClick={resetView} className="graph-reset-btn" type="button">
+        Reset view
+      </button>
+      </div>
 
       {/* legend */}
       <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 10, paddingLeft: 4 }}>
