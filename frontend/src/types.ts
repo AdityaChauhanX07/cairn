@@ -40,6 +40,77 @@ export interface GraphData {
   edges: GraphEdge[];
 }
 
+// ── Structured guide data (Mode A rich cards) ────────────────────────────────
+// Mirrors Orchestrator._build_structured_data(). Additive to `sections`
+// (markdown): present → render rich cards, absent → fall back to markdown.
+export interface ObjectRef {
+  name: string;
+  type: string;
+}
+
+export interface StructuredAlert {
+  name: string;
+  severity: string;
+  spl: string;
+  spl_explanation: string;
+  owner: string;
+  actions: string;
+  cron: string;
+  chain: ObjectRef[];
+}
+
+export interface StructuredSearch {
+  name: string;
+  spl: string;
+  spl_explanation: string;
+  owner: string;
+  cron: string;
+}
+
+export interface StructuredIndex {
+  name: string;
+  eventCount: number;
+  sizeMB: number;
+  sourcetypes: string[];
+  category: string;
+  usedBy: ObjectRef[];
+}
+
+export interface StructuredDashboard {
+  name: string;
+  owner: string;
+  indexes: string[];
+  panelCount: number;
+}
+
+export interface StructuredMacro {
+  name: string;
+  definition: string;
+  usedBy: ObjectRef[];
+}
+
+export interface StructuredLookup {
+  name: string;
+  usedBy: ObjectRef[];
+}
+
+export interface StructuredUser {
+  name: string;
+  roles: string;
+}
+
+export interface StructuredData {
+  alerts: StructuredAlert[];
+  saved_searches: StructuredSearch[];
+  indexes: StructuredIndex[];
+  dashboards: StructuredDashboard[];
+  macros: StructuredMacro[];
+  lookups: StructuredLookup[];
+  users: StructuredUser[];
+  mltk_algorithms: string[];
+  mltk_models: string[];
+}
+
 // Matches OnboardingGuide.to_dict() from the backend: a flat map of
 // section title -> markdown body, plus the full markdown and graph snapshot.
 export interface Guide {
@@ -51,6 +122,8 @@ export interface Guide {
   // MLTK / AI-Toolkit footprint counts (0 / absent when MLTK isn't installed).
   mltk_algorithm_count?: number;
   mltk_model_count?: number;
+  // Per-object structured data for rich rendering (absent on older backends).
+  structured?: StructuredData;
 }
 
 export interface LiveQuery {

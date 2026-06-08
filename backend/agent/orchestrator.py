@@ -143,6 +143,12 @@ class OnboardingGuide:
     # the AI Toolkit isn't installed (and the section is then absent entirely).
     mltk_algorithm_count: int = 0
     mltk_model_count: int = 0
+    # Structured, per-object data the frontend renders as rich cards (alert
+    # cards with severity badges, dependency-chain chip flows, per-dashboard
+    # cards, grouped ML tiles, …). Additive to ``sections`` (markdown): the
+    # markdown is still the source of truth for export, the structured data is
+    # purely for richer rendering. Built from the graph, so no extra MCP calls.
+    structured: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -694,6 +700,7 @@ class Orchestrator:
             graph_edges=rel["edges"],
             mltk_algorithm_count=len(self._mltk_algorithms),
             mltk_model_count=len(self._mltk_models),
+            structured=self._build_structured_data(),
         )
         yield AgentEvent(
             phase=AgentPhase.DONE,
@@ -1274,6 +1281,172 @@ class Orchestrator:
                     }
                 )
         return signals
+
+    # ---- Structured data for the frontend (Mode A rich cards) ----
+
+    @staticmethod
+    def _node_ref(node: Node) -> dict[str, str]:
+        return {"name": node.name, "type": node.type.value}
+
+    def _dependency_chain(self, node_id: str) -> list[dict[str, str]]:
+        """The full downstream dependency chain of a node, as ordered refs.
+
+        Follows only data-dependency edges (skipping ownership / app placement)
+        so the result reads alert → macro → lookup → index. DFS order; each
+        node appears once.
+        """
+        out: list[dict[str, str]] = []
+        seen: set[str] = {node_id}
+
+        def _walk(nid: str) -> None:
+            for edge in self._graph.out_edges(nid):
+                if edge.type in _CHAIN_SKIP_EDGES or edge.target in seen:
+                    continue
+                seen.add(edge.target)
+                child = self._graph.get_node(edge.target)
+                if child is None:
+                    continue
+                out.append(self._node_ref(child))
+                _walk(edge.target)
+
+        _walk(node_id)
+        return out
+
+    def _referencing_sources(
+        self,
+        node_id: str,
+        edge_type: EdgeType | None = None,
+        *,
+        skip_edges: frozenset[EdgeType] = frozenset(),
+    ) -> list[dict[str, str]]:
+        """Distinct source nodes pointing at ``node_id`` (its dependents)."""
+        refs: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for edge in self._graph.in_edges(node_id, edge_type):
+            if edge.type in skip_edges or edge.source in seen:
+                continue
+            seen.add(edge.source)
+            src = self._graph.get_node(edge.source)
+            if src is not None:
+                refs.append(self._node_ref(src))
+        return refs
+
+    def _build_structured_data(self) -> dict[str, Any]:
+        """Build per-object structured data from the graph for rich rendering.
+
+        Everything here is derived from the already-discovered graph — no new
+        MCP calls. Mirrors the markdown sections one-for-one so the frontend can
+        render cards when this is present and fall back to markdown when it
+        isn't.
+        """
+        graph = self._graph
+
+        alerts: list[dict[str, Any]] = []
+        for node in graph.nodes_by_type(NodeType.ALERT):
+            p = node.properties
+            alerts.append(
+                {
+                    "name": node.name,
+                    "severity": p.get("alert_severity") or _runbook_severity(node.name),
+                    "spl": p.get("spl") or "",
+                    "spl_explanation": p.get("spl_explanation") or "",
+                    "owner": p.get("owner") or "",
+                    "actions": p.get("actions") or "",
+                    "cron": p.get("cron_schedule") or "",
+                    "chain": self._dependency_chain(node.id),
+                }
+            )
+
+        searches: list[dict[str, Any]] = []
+        for node in graph.nodes_by_type(NodeType.SAVED_SEARCH):
+            p = node.properties
+            searches.append(
+                {
+                    "name": node.name,
+                    "spl": p.get("spl") or "",
+                    "spl_explanation": p.get("spl_explanation") or "",
+                    "owner": p.get("owner") or "",
+                    "cron": p.get("cron_schedule") or "",
+                }
+            )
+
+        indexes: list[dict[str, Any]] = []
+        for node in graph.nodes_by_type(NodeType.INDEX):
+            if node.name.startswith("_") or node.properties.get("placeholder"):
+                continue
+            sourcetypes = [
+                e.source.split(":", 1)[1] if ":" in e.source else e.source
+                for e in graph.in_edges(node.id, EdgeType.SOURCETYPE_OF)
+            ]
+            indexes.append(
+                {
+                    "name": node.name,
+                    "eventCount": node.properties.get("totalEventCount") or 0,
+                    "sizeMB": node.properties.get("currentDBSizeMB") or 0,
+                    "sourcetypes": sourcetypes,
+                    "category": _categorize_index(node.name),
+                    "usedBy": self._referencing_sources(
+                        node.id, skip_edges=frozenset({EdgeType.SOURCETYPE_OF})
+                    ),
+                }
+            )
+
+        dashboards: list[dict[str, Any]] = []
+        for node in graph.nodes_by_type(NodeType.DASHBOARD):
+            if node.properties.get("placeholder"):
+                continue
+            idx_names = [
+                graph.get_node(e.target).name  # type: ignore[union-attr]
+                for e in graph.out_edges(node.id, EdgeType.READS_FROM_INDEX)
+                if graph.get_node(e.target) is not None
+            ]
+            dashboards.append(
+                {
+                    "name": node.name,
+                    "owner": node.properties.get("owner") or "",
+                    "indexes": idx_names,
+                    "panelCount": node.properties.get("panel_count") or 0,
+                }
+            )
+
+        macros: list[dict[str, Any]] = []
+        for node in graph.nodes_by_type(NodeType.MACRO):
+            if node.properties.get("placeholder"):
+                continue
+            macros.append(
+                {
+                    "name": node.name,
+                    "definition": node.properties.get("definition") or node.properties.get("spl") or "",
+                    "usedBy": self._referencing_sources(node.id, EdgeType.REFERENCES_MACRO),
+                }
+            )
+
+        lookups: list[dict[str, Any]] = []
+        for node in graph.nodes_by_type(NodeType.LOOKUP):
+            if node.properties.get("placeholder"):
+                continue
+            lookups.append(
+                {
+                    "name": node.name,
+                    "usedBy": self._referencing_sources(node.id, EdgeType.REFERENCES_LOOKUP),
+                }
+            )
+
+        users: list[dict[str, Any]] = []
+        for node in graph.nodes_by_type(NodeType.USER):
+            users.append({"name": node.name, "roles": node.properties.get("roles") or ""})
+
+        return {
+            "alerts": alerts,
+            "saved_searches": searches,
+            "indexes": indexes,
+            "dashboards": dashboards,
+            "macros": macros,
+            "lookups": lookups,
+            "users": users,
+            "mltk_algorithms": self._extract_mltk_names(self._mltk_algorithms),
+            "mltk_models": self._extract_mltk_names(self._mltk_models),
+        }
 
     # ---- Follow-up Q&A ----
 

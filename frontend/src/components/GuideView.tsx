@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, forwardRef, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, forwardRef, type ReactNode } from 'react';
 import { useCairn } from '../context/CairnContext';
 import { markdownToHtml } from '../utils/markdown';
 import { envSummaryLine } from '../utils/env';
@@ -7,7 +7,11 @@ import { categorize } from './IndexTiles';
 import RelationshipGraph from './RelationshipGraph';
 import { Eyebrow, Icons } from './Primitives';
 import { SkeletonText } from './Skeleton';
-import type { GuideSection } from '../types';
+import type {
+  GuideSection,
+  ObjectRef,
+  StructuredData,
+} from '../types';
 import type { Screen } from '../App';
 
 interface Props {
@@ -31,7 +35,11 @@ const SECTION_META: Record<string, { accent: string; summary: (c: Counts) => str
   },
 };
 
+const ALERTS_TITLE = 'Critical Alerts & What They Mean';
 const DATA_LANDSCAPE_TITLE = 'Your Data Landscape';
+const DASHBOARDS_TITLE = "Your Team's Dashboards";
+const SHORTHAND_TITLE = 'The Shorthand';
+const OWNERSHIP_TITLE = 'Who Knows What';
 const ML_TITLE = 'AI & ML Footprint';
 
 export default function GuideView({ goto }: Props) {
@@ -206,6 +214,7 @@ export default function GuideView({ goto }: Props) {
               onToggle={() => toggleSection(i)}
               onChipClick={focusTerm}
               topSlot={s.title === DATA_LANDSCAPE_TITLE ? <IndexTileGrid tiles={indexTiles} /> : undefined}
+              rich={renderRichSection(s.title, guide.structured, focusTerm)}
             />
           ))}
 
@@ -299,10 +308,14 @@ interface CardProps {
   onToggle: () => void;
   onChipClick: (term: string) => void;
   topSlot?: ReactNode;
+  // Rich, structured rendering for this section. When present it replaces the
+  // markdown body; when null we fall back to markdown (with the thin-section
+  // treatment as before).
+  rich?: ReactNode;
 }
 
 const GuideSectionCard = forwardRef<HTMLElement, CardProps>(function GuideSectionCard(
-  { n, section, counts, open, onToggle, onChipClick, topSlot },
+  { n, section, counts, open, onToggle, onChipClick, topSlot, rich },
   ref,
 ) {
   const meta = SECTION_META[section.title] ?? { accent: 'var(--line)', summary: () => '' };
@@ -316,7 +329,8 @@ const GuideSectionCard = forwardRef<HTMLElement, CardProps>(function GuideSectio
     }
   }
 
-  if (isThinSection(section.content || '')) {
+  // Rich sections are never "thin" — they carry real structured content.
+  if (!rich && isThinSection(section.content || '')) {
     return (
       <section ref={ref} style={{ marginTop: 54, scrollMarginTop: 20 }}>
         <div className="row gap-3" style={{ alignItems: 'baseline', marginBottom: 6 }}>
@@ -343,16 +357,317 @@ const GuideSectionCard = forwardRef<HTMLElement, CardProps>(function GuideSectio
         <span style={{ fontFamily: 'var(--mono)', fontSize: 20, color: 'var(--text-3)' }}>{open ? '−' : '+'}</span>
       </button>
       {sub && <div className="eyebrow" style={{ marginTop: 6, marginBottom: 14 }}>{sub}</div>}
-      {open && (
-        <div className="markdown-body" onClick={handleBodyClick}>
-          {topSlot}
-          {section.content?.trim() ? (
-            <div dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content) }} />
-          ) : (
-            <SkeletonText lines={5} />
-          )}
-        </div>
-      )}
+      {open &&
+        (rich ? (
+          <div style={{ marginTop: 4 }}>
+            {topSlot}
+            {rich}
+          </div>
+        ) : (
+          <div className="markdown-body" onClick={handleBodyClick}>
+            {topSlot}
+            {section.content?.trim() ? (
+              <div dangerouslySetInnerHTML={{ __html: markdownToHtml(section.content) }} />
+            ) : (
+              <SkeletonText lines={5} />
+            )}
+          </div>
+        ))}
     </section>
   );
 });
+
+// ── Rich structured cards (Mode A) ───────────────────────────────────────────
+
+// Map a section title to its rich renderer. Returns null when there's no
+// structured data for it, so the card falls back to markdown.
+function renderRichSection(
+  title: string,
+  s: StructuredData | undefined,
+  onChip: (term: string) => void,
+): ReactNode | null {
+  if (!s) return null;
+  switch (title) {
+    case ALERTS_TITLE:
+      return s.alerts.length ? <AlertCards alerts={s.alerts} onChip={onChip} /> : null;
+    case DASHBOARDS_TITLE:
+      return s.dashboards.length ? <DashboardCards dashboards={s.dashboards} onChip={onChip} /> : null;
+    case SHORTHAND_TITLE:
+      return s.macros.length || s.lookups.length ? <ShorthandCards macros={s.macros} lookups={s.lookups} onChip={onChip} /> : null;
+    case OWNERSHIP_TITLE: {
+      const cards = <OwnershipCards data={s} />;
+      return cards ? cards : null;
+    }
+    case ML_TITLE:
+      return s.mltk_algorithms.length ? <MLFootprint algorithms={s.mltk_algorithms} models={s.mltk_models} /> : null;
+    default:
+      return null;
+  }
+}
+
+// chip glyph + class per object type, matching the dependency-graph palette.
+const CHAIN_GLYPH: Record<string, string> = {
+  alert: '△', saved_search: '◇', macro: '◇', lookup: '▫', index: '▪', sourcetype: '▪',
+};
+function chainClass(type: string): string {
+  return `chain-chip chain-${type}`;
+}
+
+function ChainChip({ node, onChip }: { node: ObjectRef; onChip?: (t: string) => void }) {
+  return (
+    <button
+      type="button"
+      className={chainClass(node.type)}
+      onClick={onChip ? () => onChip(node.name) : undefined}
+      style={{ cursor: onChip ? 'pointer' : 'default' }}
+      title={`${node.type}: ${node.name}`}
+    >
+      {CHAIN_GLYPH[node.type] ?? '▪'} {node.name}
+    </button>
+  );
+}
+
+function ChainFlow({ chain, onChip }: { chain: ObjectRef[]; onChip?: (t: string) => void }) {
+  if (!chain.length) return null;
+  return (
+    <div className="chain-flow">
+      {chain.map((dep, i) => (
+        <Fragment key={`${dep.type}:${dep.name}`}>
+          {i > 0 && <span className="chain-arrow">→</span>}
+          <ChainChip node={dep} onChip={onChip} />
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!text) return null;
+  return (
+    <button
+      type="button"
+      className="copy-btn"
+      onClick={() => {
+        navigator.clipboard?.writeText(text).then(
+          () => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1400);
+          },
+          () => {},
+        );
+      }}
+    >
+      {copied ? 'copied' : 'copy'}
+    </button>
+  );
+}
+
+function SplBlock({ spl }: { spl: string }) {
+  if (!spl?.trim()) return null;
+  return (
+    <div className="spl-block">
+      <code>{spl}</code>
+      <CopyButton text={spl} />
+    </div>
+  );
+}
+
+function SevBadge({ severity }: { severity: string }) {
+  const sev = severity?.toLowerCase() === 'critical' ? 'critical' : severity?.toLowerCase() === 'info' ? 'info' : 'warning';
+  return <span className={`sev-badge sev-${sev}`}>● {sev}</span>;
+}
+
+function AlertCards({ alerts, onChip }: { alerts: StructuredData['alerts']; onChip: (t: string) => void }) {
+  return (
+    <div>
+      {alerts.map((a) => (
+        <div className="rich-card alert-card" key={a.name}>
+          <div className="rich-card-head">
+            <h4>{a.name}</h4>
+            <SevBadge severity={a.severity} />
+          </div>
+          {a.spl_explanation && <p className="rich-card-desc">{a.spl_explanation}</p>}
+          {a.chain.length > 0 && (
+            <>
+              <div className="eyebrow" style={{ marginTop: 14 }}>dependency chain</div>
+              <ChainFlow chain={a.chain} onChip={onChip} />
+            </>
+          )}
+          <SplBlock spl={a.spl} />
+          <div className="rich-meta">
+            {a.cron && <span>runs {a.cron}</span>}
+            <span>{a.actions ? `action: ${a.actions}` : 'no alert action'}</span>
+            {a.owner && <span>owner: {a.owner}</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DashboardCards({ dashboards, onChip }: { dashboards: StructuredData['dashboards']; onChip: (t: string) => void }) {
+  return (
+    <div>
+      {dashboards.map((d) => (
+        <div className="rich-card dash-card" key={d.name}>
+          <div className="rich-card-head">
+            <h4>{d.name.replace(/_/g, ' ')}</h4>
+            {d.panelCount > 0 && <span className="panel-count">{d.panelCount} panels</span>}
+          </div>
+          {d.indexes.length > 0 && (
+            <div className="chain-flow" style={{ marginTop: 10 }}>
+              {d.indexes.map((idx) => (
+                <ChainChip key={idx} node={{ name: idx, type: 'index' }} onChip={onChip} />
+              ))}
+            </div>
+          )}
+          {d.owner && <div className="rich-meta"><span>owner: {d.owner}</span></div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function UsedByRow({ usedBy, onChip }: { usedBy: ObjectRef[]; onChip: (t: string) => void }) {
+  if (!usedBy.length) return <div className="used-by used-by-none">not referenced by any object</div>;
+  return (
+    <div className="chain-flow" style={{ marginTop: 8 }}>
+      <span className="used-by-label">used by</span>
+      {usedBy.map((u) => (
+        <ChainChip key={`${u.type}:${u.name}`} node={u} onChip={onChip} />
+      ))}
+    </div>
+  );
+}
+
+function ShorthandCards({
+  macros,
+  lookups,
+  onChip,
+}: {
+  macros: StructuredData['macros'];
+  lookups: StructuredData['lookups'];
+  onChip: (t: string) => void;
+}) {
+  return (
+    <div>
+      {macros.length > 0 && (
+        <>
+          <div className="eyebrow" style={{ marginBottom: 10 }}>macros</div>
+          {macros.map((m) => (
+            <div className="rich-card macro-card" key={m.name}>
+              <div className="rich-card-head">
+                <ChainChip node={{ name: m.name, type: 'macro' }} onChip={onChip} />
+                {m.usedBy.length > 0 && <span className="used-count">used × {m.usedBy.length}</span>}
+              </div>
+              <SplBlock spl={m.definition} />
+              <UsedByRow usedBy={m.usedBy} onChip={onChip} />
+            </div>
+          ))}
+        </>
+      )}
+      {lookups.length > 0 && (
+        <>
+          <div className="eyebrow" style={{ margin: '22px 0 10px' }}>lookups</div>
+          {lookups.map((l) => (
+            <div className="rich-card macro-card" key={l.name}>
+              <div className="rich-card-head">
+                <ChainChip node={{ name: l.name, type: 'lookup' }} onChip={onChip} />
+                {l.usedBy.length > 0 && <span className="used-count">used × {l.usedBy.length}</span>}
+              </div>
+              <UsedByRow usedBy={l.usedBy} onChip={onChip} />
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Group MLTK algorithm names into the four MLTK families. Anything unmatched
+// falls into "other" so nothing is dropped.
+const ML_CATEGORIES: { key: string; label: string; desc: string; match: string[] }[] = [
+  { key: 'anomaly', label: 'Anomaly detection', desc: 'Surface login anomalies or system outliers', match: ['LocalOutlierFactor', 'MultivariateOutlierDetection', 'OneClassSVM', 'DBSCAN'] },
+  { key: 'forecasting', label: 'Forecasting', desc: 'Predict future values in time-series', match: ['ARIMA', 'AutoPrediction', 'StateSpaceForecast', 'PACF', 'ACF', 'Kalman'] },
+  { key: 'clustering', label: 'Clustering', desc: 'Group similar users, apps or systems', match: ['KMeans', 'XMeans', 'Birch', 'GMeans', 'SpectralClustering'] },
+  { key: 'classification', label: 'Classification', desc: 'Classify events or entities', match: ['DecisionTreeClassifier', 'GradientBoostingClassifier', 'LogisticRegression', 'RandomForestClassifier', 'SVM', 'BernoulliNB', 'GaussianNB', 'MLPClassifier'] },
+];
+
+function MLFootprint({ algorithms, models }: { algorithms: string[]; models: string[] }) {
+  const used = new Set<string>();
+  const groups = ML_CATEGORIES.map((cat) => {
+    const items = algorithms.filter((a) => cat.match.some((m) => a.toLowerCase().includes(m.toLowerCase())));
+    items.forEach((i) => used.add(i));
+    return { ...cat, items };
+  }).filter((g) => g.items.length > 0);
+
+  const other = algorithms.filter((a) => !used.has(a));
+  if (other.length) groups.push({ key: 'other', label: 'Other algorithms', desc: 'Additional MLTK algorithms available', match: [], items: other });
+
+  return (
+    <div>
+      <div className="ml-grid">
+        {groups.map((g) => (
+          <div className="rich-card ml-card" key={g.key}>
+            <h4>{g.label}</h4>
+            <div className="ml-chips">
+              {g.items.map((it) => (
+                <span className="ml-chip" key={it}>{it}</span>
+              ))}
+            </div>
+            <div className="ml-card-desc">{g.desc}</div>
+          </div>
+        ))}
+      </div>
+      <div className="rich-meta" style={{ marginTop: 14 }}>
+        <span>{algorithms.length} algorithms available</span>
+        <span>{models.length ? `${models.length} trained model${models.length !== 1 ? 's' : ''}` : 'no trained models yet'}</span>
+      </div>
+    </div>
+  );
+}
+
+function OwnershipCards({ data }: { data: StructuredData }): ReactNode | null {
+  // Tally ownership across the owned object types.
+  const counts = new Map<string, number>();
+  const bump = (owner: string) => {
+    if (owner) counts.set(owner, (counts.get(owner) ?? 0) + 1);
+  };
+  data.alerts.forEach((a) => bump(a.owner));
+  data.saved_searches.forEach((s) => bump(s.owner));
+  data.dashboards.forEach((d) => bump(d.owner));
+
+  const owners = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  if (owners.length === 0) return null;
+
+  const total = owners.reduce((sum, [, c]) => sum + c, 0);
+  const [topOwner, topCount] = owners[0];
+  const busFactor = total >= 3 && topCount / total >= 0.6;
+  const roleFor = (name: string) => data.users.find((u) => u.name === name)?.roles || '';
+
+  return (
+    <div>
+      {busFactor && (
+        <div className="bus-factor-card">
+          <h4>⚠ Bus-factor risk</h4>
+          <p>
+            <b>{topOwner}</b> owns {topCount} of {total} objects ({Math.round((topCount / total) * 100)}%). If they leave,
+            most of this environment's knowledge leaves with them — start spreading ownership.
+          </p>
+        </div>
+      )}
+      <div className="owner-grid">
+        {owners.map(([name, c]) => (
+          <div className="rich-card owner-card" key={name}>
+            <div className="rich-card-head">
+              <h4>{name}</h4>
+              <span className="used-count">{c} object{c !== 1 ? 's' : ''}</span>
+            </div>
+            {roleFor(name) && <div className="rich-meta"><span>{roleFor(name)}</span></div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
