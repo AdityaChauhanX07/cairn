@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # ---- Splunk MCP ----
     splunk_mcp_url: str = Field(
-        default="https://localhost:8089/services/mcp/v1",
+        default="https://localhost:8089/services/mcp",
         description="Splunk MCP server endpoint.",
     )
     splunk_token: SecretStr = Field(

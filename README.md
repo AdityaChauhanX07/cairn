@@ -41,9 +41,9 @@ The relationship graph is the core data structure. Cairn parses every SPL string
 
 ## MCP tools used
 
-Cairn exercises **13 tools** across both MCP namespaces. Each `saia_` tool is attempted first with an LLM fallback when the AI Assistant app is unavailable.
+Cairn exercises **14 tools** across both MCP namespaces. Each `saia_` tool is attempted first with an LLM fallback when the AI Assistant app is unavailable.
 
-### splunk_ (9 tools)
+### splunk_ (10 tools)
 
 | Tool | What Cairn does with it |
 |------|------------------------|
@@ -56,6 +56,7 @@ Cairn exercises **13 tools** across both MCP namespaces. Each `saia_` tool is at
 | `splunk_get_user_info` | Current user permissions |
 | `splunk_get_kv_store_collections` | KV Store usage |
 | `splunk_run_query` | Live SPL during Q&A (guardrailed: `| head 1000`, 1-min cap, non-destructive only) |
+| `splunk_run_saved_search` | Execute an existing saved search to pull current rows during Q&A |
 
 ### saia_ (4 tools)
 
@@ -97,7 +98,7 @@ Backend (Python + FastAPI)
 
 Data flow is strictly read-only. Cairn reads via MCP, reasons with the LLM, and emits generated artifacts to the user. It never writes to Splunk.
 
-Full architecture diagram: [`docs/architecture.png`](docs/architecture.png)
+Full architecture diagram: [`architecture_diagram.png`](architecture_diagram.png)
 
 ---
 
