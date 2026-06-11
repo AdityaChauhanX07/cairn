@@ -318,7 +318,7 @@ cairn/
 
 ## Demo
 
-[Watch the demo video](https://youtube.com/YOUR_VIDEO_HERE) (under 3 minutes)
+[Watch the demo video](https://youtu.be/1XHlmRybZS4)
 
 ---
 
